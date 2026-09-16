@@ -65,10 +65,23 @@ pub enum Priority {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageState {
-    Queued,
-    Relayed,
-    Delivered,
-    Failed,
+    Queued = 0,
+    Relayed = 1,
+    Delivered = 2,
+    Failed = 3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageDirection {
+    Outbound = 0,
+    Inbound = 1,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrustState {
+    Unverified = 0,
+    Verified = 1,
+    Blocked = 2,
 }
 
 #[cfg(test)]

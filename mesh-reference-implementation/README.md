@@ -14,10 +14,10 @@ This workspace implements:
 - deterministic crypto test vectors;
 - SQLite-backed bundle/tombstone storage;
 - controlled-epidemic routing decisions;
-- an event/action `MeshCore` shell;
+- an event/action `MeshCore` shell with identity, contacts and `send_text()`;
 - a thin UniFFI-ready bindings crate.
 
-`MeshCore::send_text()`, session HELLO frames and mobile transports come next.
+`MeshCore::send_text()` composes, encrypts, signs and stores a Bundle with no radio. The destination decrypts locally after a contact is added. Session HELLO frames and mobile transports come next.
 
 ## Build
 

@@ -10,4 +10,5 @@ mesh-wire = { path = "../mesh-wire" }
 mesh-store = { path = "../mesh-store" }
 mesh-routing = { path = "../mesh-routing" }
 mesh-crypto = { path = "../mesh-crypto" }
+rand_core.workspace = true
 thiserror.workspace = true

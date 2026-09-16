@@ -1,7 +1,7 @@
 use crate::identity::Identity;
 use crate::CryptoError;
 use chacha20poly1305::aead::{Aead, KeyInit};
-use chacha20poly1305::ChaCha20Poly1305;
+use chacha20poly1305::{ChaCha20Poly1305, XChaCha20Poly1305};
 use hkdf::Hkdf;
 use rand_core::{CryptoRng, RngCore};
 use sha2::Sha256;
@@ -76,6 +76,28 @@ pub fn open_message(recipient: &Identity, sealed: &SealedMessage) -> Result<Vec<
         .map_err(|_| CryptoError::DecryptionFailed)?;
     key_bytes.zeroize();
     Ok(plaintext)
+}
+
+pub fn seal_local(
+    key: &[u8; 32],
+    nonce: &[u8; 24],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let cipher = XChaCha20Poly1305::new(key.into());
+    cipher
+        .encrypt(nonce.into(), plaintext)
+        .map_err(|_| CryptoError::EncryptionFailed)
+}
+
+pub fn open_local(
+    key: &[u8; 32],
+    nonce: &[u8; 24],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let cipher = XChaCha20Poly1305::new(key.into());
+    cipher
+        .decrypt(nonce.into(), ciphertext.as_ref())
+        .map_err(|_| CryptoError::DecryptionFailed)
 }
 
 fn derive_message_key(shared_secret: &[u8; 32]) -> Result<[u8; 32], CryptoError> {

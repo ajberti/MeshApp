@@ -20,6 +20,14 @@ AEAD   = ChaCha20-Poly1305 (12-byte nonce, 16-byte tag appended to ciphertext)
 
 Protocol version in a Bundle is the unsigned integer `(major << 8) | minor`, so 1.0 encodes as `0x0100`.
 
+Local conversation copies are encrypted at rest with XChaCha20-Poly1305 and a 256-bit `LocalDataKey` held in memory. Native Keychain/Keystore persistence comes with the app shells.
+
+## Milestone 3
+
+`MeshCore::send_text()` creates a signed, encrypted Bundle with no radio. The destination core decrypts only after `add_contact()` has stored the sender's public keys. Relays store ciphertext and increment hop count.
+
+Clock and RNG are injected (`MeshClock`, `MeshRng`) so tests can be deterministic.
+
 ## Critical invariants
 
 1. Bundle IDs and message IDs are distinct types.

@@ -1,8 +1,8 @@
-# Next Commit: MeshCore::send_text and local delivery
+# Next Commit: Mesh session HELLO and encrypted frames
 
-1. Add contacts storage (public signing and encryption keys, fingerprint, trust state).
-2. Add `MeshCore` identity plus `add_contact()`.
-3. Add `MeshCore::send_text(recipient, text)` using the signed/encrypted Bundle path.
-4. On receive, if `destination_id` is local: decrypt, verify, store the message, emit `MessageReceived`.
-5. Inject Clock and RandomSource traits for deterministic tests.
-6. Keep HELLO/session frames and Nearby Connections until that in-process A → B test passes.
+1. Add the `0x4D50` binary frame header and frame types.
+2. Implement HELLO, version negotiation, ephemeral X25519 link keys and SESSION_OK.
+3. Protect subsequent frames with ChaCha20-Poly1305 session keys and counters.
+4. Exchange an explicit Bundle ID inventory (no Bloom filters).
+5. Transfer a `send_text` Bundle across two in-process `MeshCore` sessions.
+6. Keep Nearby Connections and native apps until that session test passes.

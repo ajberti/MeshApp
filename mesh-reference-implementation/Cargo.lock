@@ -566,6 +566,7 @@ dependencies = [
  "mesh-store",
  "mesh-types",
  "mesh-wire",
+ "rand_core",
  "thiserror",
 ]
 

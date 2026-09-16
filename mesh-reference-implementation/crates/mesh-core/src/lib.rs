@@ -1,9 +1,21 @@
+use mesh_crypto::{
+    conversation_id, open_local, open_message, seal_local, seal_message, verify_signature,
+    CryptoError, Identity, PublicIdentity, SealedMessage,
+};
 use mesh_routing::{ControlledEpidemicRouter, PeerContext, RoutingDecision};
-use mesh_store::{InsertOutcome, MeshStore, StoreError};
-use mesh_types::{BundleId, DiscoveryId, LinkId, MessageId, UserId};
-use mesh_wire::{WireBundle, WireError};
+use mesh_store::{InsertOutcome, MeshStore, StoreError, StoredContact, StoredMessageRow};
+use mesh_types::{
+    BundleId, BundleType, ConversationId, DiscoveryId, LinkId, MessageDirection, MessageId,
+    MessageState, Priority, TrustState, UserId,
+};
+use mesh_wire::{
+    DirectMessagePayload, ImmutableBundleHeader, RelayHeader, SealedPayload, WireBundle, WireError,
+    DIRECT_MESSAGE_VERSION, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+};
+use rand_core::{CryptoRng, OsRng, RngCore};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[derive(Clone, Debug)]
@@ -30,6 +42,115 @@ impl Default for MeshConfig {
 }
 
 #[derive(Clone, Debug)]
+pub enum MeshClock {
+    System,
+    Fixed(i64),
+}
+
+impl MeshClock {
+    pub fn now_ms(&self) -> i64 {
+        match self {
+            Self::System => SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+            Self::Fixed(now) => *now,
+        }
+    }
+}
+
+pub struct DeterministicRng {
+    seed: [u8; 32],
+    counter: u64,
+}
+
+impl DeterministicRng {
+    pub fn new(seed: [u8; 32]) -> Self {
+        Self { seed, counter: 0 }
+    }
+}
+
+impl RngCore for DeterministicRng {
+    fn next_u32(&mut self) -> u32 {
+        let mut bytes = [0u8; 4];
+        self.fill_bytes(&mut bytes);
+        u32::from_le_bytes(bytes)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut bytes = [0u8; 8];
+        self.fill_bytes(&mut bytes);
+        u64::from_le_bytes(bytes)
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        let mut offset = 0;
+        while offset < dest.len() {
+            let mut block = [0u8; 40];
+            block[..32].copy_from_slice(&self.seed);
+            block[32..].copy_from_slice(&self.counter.to_be_bytes());
+            self.counter = self.counter.wrapping_add(1);
+            let digest = mesh_crypto::sha256(&block);
+            let n = (dest.len() - offset).min(32);
+            dest[offset..offset + n].copy_from_slice(&digest[..n]);
+            offset += n;
+        }
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
+impl CryptoRng for DeterministicRng {}
+
+pub enum MeshRng {
+    System(OsRng),
+    Deterministic(DeterministicRng),
+}
+
+impl MeshRng {
+    pub fn os() -> Self {
+        Self::System(OsRng)
+    }
+
+    pub fn deterministic(seed: [u8; 32]) -> Self {
+        Self::Deterministic(DeterministicRng::new(seed))
+    }
+}
+
+impl RngCore for MeshRng {
+    fn next_u32(&mut self) -> u32 {
+        match self {
+            Self::System(rng) => rng.next_u32(),
+            Self::Deterministic(rng) => rng.next_u32(),
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        match self {
+            Self::System(rng) => rng.next_u64(),
+            Self::Deterministic(rng) => rng.next_u64(),
+        }
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        match self {
+            Self::System(rng) => rng.fill_bytes(dest),
+            Self::Deterministic(rng) => rng.fill_bytes(dest),
+        }
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
+impl CryptoRng for MeshRng {}
+
+#[derive(Clone, Debug)]
 pub enum CoreEvent {
     PeerDiscovered {
         peer_token: Vec<u8>,
@@ -48,6 +169,10 @@ pub enum CoreEvent {
     BytesReceived {
         link_id: LinkId,
         data: Vec<u8>,
+    },
+    SendText {
+        recipient: UserId,
+        text: String,
     },
     Tick {
         now_ms: i64,
@@ -76,9 +201,27 @@ pub enum CoreAction {
         link_id: LinkId,
         bundle_id: BundleId,
     },
+    MessageUpdated {
+        message_id: MessageId,
+    },
+    MessageReceived {
+        message_id: MessageId,
+    },
     Log {
         code: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaintextMessage {
+    pub message_id: MessageId,
+    pub conversation_id: ConversationId,
+    pub sender_id: UserId,
+    pub recipient_id: UserId,
+    pub direction: MessageDirection,
+    pub state: MessageState,
+    pub content_type: String,
+    pub text: String,
 }
 
 #[derive(Clone, Debug)]
@@ -88,44 +231,150 @@ struct LinkState {
 }
 
 pub struct MeshCore {
+    identity: Identity,
+    local_data_key: [u8; 32],
     store: MeshStore,
     router: ControlledEpidemicRouter,
     peers: HashMap<Vec<u8>, DiscoveryId>,
     links: HashMap<LinkId, LinkState>,
     local_discovery_id: DiscoveryId,
-    #[allow(dead_code)]
+    clock: MeshClock,
+    rng: MeshRng,
     config: MeshConfig,
 }
 
 impl MeshCore {
-    pub fn open(path: impl AsRef<Path>, config: MeshConfig) -> Result<Self, CoreError> {
+    pub fn open(
+        path: impl AsRef<Path>,
+        config: MeshConfig,
+        identity: Identity,
+        local_data_key: [u8; 32],
+    ) -> Result<Self, CoreError> {
         let store = MeshStore::open(path)?;
-        Ok(Self::from_store(store, config))
+        Ok(Self::from_store(
+            store,
+            config,
+            identity,
+            local_data_key,
+            MeshClock::System,
+            MeshRng::os(),
+        ))
     }
 
-    pub fn open_in_memory(config: MeshConfig) -> Result<Self, CoreError> {
+    pub fn open_in_memory(
+        config: MeshConfig,
+        identity: Identity,
+        local_data_key: [u8; 32],
+        clock: MeshClock,
+        rng: MeshRng,
+    ) -> Result<Self, CoreError> {
         let store = MeshStore::open_in_memory()?;
-        Ok(Self::from_store(store, config))
+        Ok(Self::from_store(
+            store,
+            config,
+            identity,
+            local_data_key,
+            clock,
+            rng,
+        ))
     }
 
-    fn from_store(store: MeshStore, config: MeshConfig) -> Self {
+    fn from_store(
+        store: MeshStore,
+        config: MeshConfig,
+        identity: Identity,
+        local_data_key: [u8; 32],
+        clock: MeshClock,
+        mut rng: MeshRng,
+    ) -> Self {
         let router = ControlledEpidemicRouter {
             normal_replication_limit: config.normal_replication_limit,
             high_replication_limit: config.high_replication_limit,
             emergency_replication_limit: config.emergency_replication_limit,
         };
+        let mut discovery = [0u8; 16];
+        rng.fill_bytes(&mut discovery);
         Self {
+            identity,
+            local_data_key,
             store,
             router,
             peers: HashMap::new(),
             links: HashMap::new(),
-            local_discovery_id: DiscoveryId::random(),
+            local_discovery_id: DiscoveryId::from_bytes(discovery),
+            clock,
+            rng,
             config,
         }
     }
 
+    pub fn user_id(&self) -> UserId {
+        self.identity.user_id()
+    }
+
+    pub fn public_identity(&self) -> PublicIdentity {
+        self.identity.public_identity()
+    }
+
     pub fn local_discovery_id(&self) -> DiscoveryId {
         self.local_discovery_id
+    }
+
+    pub fn add_contact(
+        &mut self,
+        identity: PublicIdentity,
+        display_name: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        self.store.upsert_contact(&StoredContact {
+            user_id: identity.user_id,
+            display_name: display_name.into(),
+            signing_public: identity.signing_public,
+            encryption_public: identity.encryption_public,
+            trust_state: TrustState::Verified,
+            fingerprint: to_hex(&identity.fingerprint()),
+            created_at_ms: self.clock.now_ms(),
+        })?;
+        Ok(())
+    }
+
+    pub fn send_text(
+        &mut self,
+        recipient: UserId,
+        text: impl Into<String>,
+    ) -> Result<Vec<CoreAction>, CoreError> {
+        self.compose_text(recipient, text.into())
+    }
+
+    pub fn accept_bundle(&mut self, bundle: &WireBundle) -> Result<Vec<CoreAction>, CoreError> {
+        self.ingest_bundle(bundle.clone())
+    }
+
+    pub fn stored_bundles(&self) -> Result<Vec<mesh_store::StoredBundle>, CoreError> {
+        Ok(self.store.list_bundles()?)
+    }
+
+    pub fn plaintext_messages(&self) -> Result<Vec<PlaintextMessage>, CoreError> {
+        let mut messages = Vec::new();
+        for row in self.store.list_messages()? {
+            let nonce: [u8; 24] = row
+                .content_nonce
+                .as_slice()
+                .try_into()
+                .map_err(|_| CoreError::InvalidMessage)?;
+            let plaintext = open_local(&self.local_data_key, &nonce, &row.content_ciphertext)?;
+            let text = String::from_utf8(plaintext).map_err(|_| CoreError::InvalidMessage)?;
+            messages.push(PlaintextMessage {
+                message_id: row.message_id,
+                conversation_id: row.conversation_id,
+                sender_id: row.sender_id,
+                recipient_id: row.recipient_id,
+                direction: row.direction,
+                state: row.state,
+                content_type: row.content_type,
+                text,
+            });
+        }
+        Ok(messages)
     }
 
     pub fn process_event(&mut self, event: CoreEvent) -> Result<Vec<CoreAction>, CoreError> {
@@ -164,7 +413,11 @@ impl MeshCore {
                 self.links.remove(&link_id);
                 Ok(Vec::new())
             }
-            CoreEvent::BytesReceived { link_id, data } => self.receive_wire_bundle(link_id, &data),
+            CoreEvent::BytesReceived { link_id: _, data } => {
+                let bundle = WireBundle::decode_cbor(&data)?;
+                self.ingest_bundle(bundle)
+            }
+            CoreEvent::SendText { recipient, text } => self.compose_text(recipient, text),
             CoreEvent::Tick { now_ms } => self.plan_transfers(now_ms),
         }
     }
@@ -177,22 +430,180 @@ impl MeshCore {
         Ok(self.store.insert_bundle(bundle, first_seen_at_ms)?)
     }
 
-    fn receive_wire_bundle(
+    fn compose_text(
         &mut self,
-        _link_id: LinkId,
-        data: &[u8],
+        recipient: UserId,
+        text: String,
     ) -> Result<Vec<CoreAction>, CoreError> {
-        let bundle = WireBundle::decode_cbor(data)?;
-        let bundle_id = bundle.immutable.bundle_id;
-        let outcome = self
+        let contact = self
             .store
-            .insert_bundle(&bundle, bundle.relay.received_at_ms)?;
-        Ok(match outcome {
+            .get_contact(recipient)?
+            .ok_or(CoreError::UnknownContact(recipient))?;
+        let now = self.clock.now_ms();
+        let conversation_id = conversation_id(self.identity.user_id(), recipient);
+        self.store
+            .ensure_conversation(conversation_id, recipient, now)?;
+        let sequence = self.store.outbound_count(conversation_id)? + 1;
+        let message_id = MessageId::from_bytes(self.random_bytes());
+        let bundle_id = BundleId::from_bytes(self.random_bytes());
+        let payload = DirectMessagePayload {
+            version: DIRECT_MESSAGE_VERSION,
+            message_id,
+            conversation_id,
+            sender_id: self.identity.user_id(),
+            recipient_id: recipient,
+            sequence,
+            sent_at_ms: now,
+            content_type: "text/plain".into(),
+            content: text.into_bytes(),
+        };
+        let sealed = seal_message(
+            &contact.encryption_public,
+            &payload.encode_cbor(),
+            &mut self.rng,
+        )?;
+        let encrypted_payload = SealedPayload {
+            ephemeral_public: sealed.ephemeral_public,
+            nonce: sealed.nonce,
+            ciphertext: sealed.ciphertext,
+        }
+        .encode_cbor();
+        let mut bundle = WireBundle {
+            immutable: ImmutableBundleHeader {
+                protocol_major: PROTOCOL_MAJOR,
+                protocol_minor: PROTOCOL_MINOR,
+                bundle_id,
+                bundle_type: BundleType::DirectMessage,
+                sender_id: self.identity.user_id(),
+                destination_id: recipient,
+                created_at_ms: now,
+                ttl_seconds: self.config.default_ttl_secs,
+                hop_limit: self.config.default_hop_limit,
+                priority: Priority::Normal,
+                payload_length: encrypted_payload.len() as u32,
+            },
+            relay: RelayHeader {
+                hop_count: 0,
+                received_at_ms: now,
+            },
+            encrypted_payload,
+            sender_signature: vec![0; 64],
+        };
+        bundle.sender_signature = self.identity.sign(&bundle.signed_bytes()?).to_vec();
+        self.store.insert_bundle(&bundle, now)?;
+
+        let nonce = self.random_bytes::<24>();
+        let ciphertext = seal_local(&self.local_data_key, &nonce, &payload.content)?;
+        self.store.insert_local_message(&StoredMessageRow {
+            message_id,
+            conversation_id,
+            sender_id: self.identity.user_id(),
+            recipient_id: recipient,
+            direction: MessageDirection::Outbound,
+            sent_at_ms: Some(now),
+            received_at_ms: None,
+            state: MessageState::Queued,
+            content_type: payload.content_type,
+            content_nonce: nonce.to_vec(),
+            content_ciphertext: ciphertext,
+            original_bundle_id: Some(bundle_id),
+        })?;
+
+        Ok(vec![
+            CoreAction::MessageUpdated { message_id },
+            CoreAction::BundleStored { bundle_id },
+        ])
+    }
+
+    fn ingest_bundle(&mut self, mut bundle: WireBundle) -> Result<Vec<CoreAction>, CoreError> {
+        let local_destination = bundle.immutable.destination_id == self.identity.user_id();
+        if !local_destination {
+            if bundle.relay.hop_count >= bundle.immutable.hop_limit {
+                return Ok(vec![CoreAction::Log {
+                    code: "HOP_LIMIT".into(),
+                }]);
+            }
+            bundle.relay.hop_count = bundle.relay.hop_count.saturating_add(1);
+        }
+
+        let now = self.clock.now_ms();
+        bundle.relay.received_at_ms = now;
+        let bundle_id = bundle.immutable.bundle_id;
+        let outcome = self.store.insert_bundle(&bundle, now)?;
+        let mut actions = match outcome {
             InsertOutcome::Inserted => vec![CoreAction::BundleStored { bundle_id }],
             InsertOutcome::Duplicate | InsertOutcome::RejectedTombstoned => {
                 vec![CoreAction::BundleDuplicate { bundle_id }]
             }
-        })
+        };
+        if local_destination {
+            if let Some(message_id) = self.deliver_local(&bundle)? {
+                actions.push(CoreAction::MessageReceived { message_id });
+            }
+        }
+        Ok(actions)
+    }
+
+    fn deliver_local(&mut self, bundle: &WireBundle) -> Result<Option<MessageId>, CoreError> {
+        let sealed_payload = SealedPayload::decode_cbor(&bundle.encrypted_payload)?;
+        let sealed = SealedMessage {
+            ephemeral_public: sealed_payload.ephemeral_public,
+            nonce: sealed_payload.nonce,
+            ciphertext: sealed_payload.ciphertext,
+        };
+        let plaintext = match open_message(&self.identity, &sealed) {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(None),
+        };
+        let payload = DirectMessagePayload::decode_cbor(&plaintext)?;
+        if payload.recipient_id != self.identity.user_id()
+            || payload.sender_id != bundle.immutable.sender_id
+            || payload.recipient_id != bundle.immutable.destination_id
+        {
+            return Err(CoreError::InvalidMessage);
+        }
+        if self.store.is_message_delivered(payload.message_id)?
+            || self.store.has_message(payload.message_id)?
+        {
+            return Ok(None);
+        }
+        let Some(contact) = self.store.get_contact(payload.sender_id)? else {
+            return Ok(None);
+        };
+        let signature: [u8; 64] = bundle
+            .sender_signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| CoreError::InvalidMessage)?;
+        verify_signature(&contact.signing_public, &bundle.signed_bytes()?, &signature)?;
+
+        let now = self.clock.now_ms();
+        self.store
+            .ensure_conversation(payload.conversation_id, payload.sender_id, now)?;
+        let nonce = self.random_bytes::<24>();
+        let ciphertext = seal_local(&self.local_data_key, &nonce, &payload.content)?;
+        self.store.insert_local_message(&StoredMessageRow {
+            message_id: payload.message_id,
+            conversation_id: payload.conversation_id,
+            sender_id: payload.sender_id,
+            recipient_id: payload.recipient_id,
+            direction: MessageDirection::Inbound,
+            sent_at_ms: Some(payload.sent_at_ms),
+            received_at_ms: Some(now),
+            state: MessageState::Delivered,
+            content_type: payload.content_type,
+            content_nonce: nonce.to_vec(),
+            content_ciphertext: ciphertext,
+            original_bundle_id: Some(bundle.immutable.bundle_id),
+        })?;
+        self.store.mark_message_delivered(payload.message_id, now)?;
+        Ok(Some(payload.message_id))
+    }
+
+    fn random_bytes<const N: usize>(&mut self) -> [u8; N] {
+        let mut bytes = [0u8; N];
+        self.rng.fill_bytes(&mut bytes);
+        bytes
     }
 
     fn plan_transfers(&self, now_ms: i64) -> Result<Vec<CoreAction>, CoreError> {
@@ -270,27 +681,56 @@ impl MeshCore {
     }
 }
 
+fn to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
 #[derive(Debug, Error)]
 pub enum CoreError {
     #[error("storage error: {0}")]
     Store(#[from] StoreError),
     #[error("wire error: {0}")]
     Wire(#[from] WireError),
+    #[error("crypto error: {0}")]
+    Crypto(#[from] CryptoError),
+    #[error("unknown contact {0}")]
+    UnknownContact(UserId),
+    #[error("invalid user message")]
+    InvalidMessage,
     #[error("unknown link {0:?}")]
     UnknownLink(LinkId),
 }
 
-// Reserved now so adding user-message APIs does not force a public type rename later.
-#[allow(dead_code)]
-fn _message_type_marker(_: MessageId) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{BundleType, Priority};
-    use mesh_wire::{ImmutableBundleHeader, RelayHeader, PROTOCOL_MAJOR, PROTOCOL_MINOR};
+    use mesh_wire::{ImmutableBundleHeader, RelayHeader};
 
-    fn bundle(destination_id: UserId) -> WireBundle {
+    fn seed(start: u8) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        for (i, slot) in bytes.iter_mut().enumerate() {
+            *slot = start.wrapping_add(i as u8);
+        }
+        bytes
+    }
+
+    fn test_core(identity: Identity, rng_seed: u8) -> MeshCore {
+        MeshCore::open_in_memory(
+            MeshConfig::default(),
+            identity,
+            seed(rng_seed.wrapping_add(50)),
+            MeshClock::Fixed(1_700_000_000_000),
+            MeshRng::deterministic(seed(rng_seed)),
+        )
+        .unwrap()
+    }
+
+    fn dummy_bundle(destination_id: UserId) -> WireBundle {
         let encrypted_payload = vec![1, 2, 3, 4];
         WireBundle {
             immutable: ImmutableBundleHeader {
@@ -317,9 +757,10 @@ mod tests {
 
     #[test]
     fn tick_prioritises_bundle_for_current_destination() {
-        let mut core = MeshCore::open_in_memory(MeshConfig::default()).unwrap();
+        let identity = Identity::from_seeds(seed(0x01), seed(0x02));
+        let mut core = test_core(identity, 3);
         let destination = UserId::random();
-        let bundle = bundle(destination);
+        let bundle = dummy_bundle(destination);
         core.import_bundle(&bundle, 0).unwrap();
 
         let link = LinkId(1);
@@ -341,107 +782,53 @@ mod tests {
         );
     }
 
-    fn seed(start: u8) -> [u8; 32] {
-        let mut bytes = [0u8; 32];
-        for (i, slot) in bytes.iter_mut().enumerate() {
-            *slot = start.wrapping_add(i as u8);
-        }
-        bytes
+    #[test]
+    fn send_text_delivers_only_to_recipient() {
+        let alice_id = Identity::from_seeds(seed(0x00), seed(0x20));
+        let bob_id = Identity::from_seeds(seed(0x40), seed(0x60));
+        let charlie_id = Identity::from_seeds(seed(0xc0), seed(0xe0));
+
+        let mut alice = test_core(alice_id, 10);
+        let mut bob = test_core(bob_id, 11);
+        let mut charlie = test_core(charlie_id, 12);
+
+        alice.add_contact(bob.public_identity(), "Bob").unwrap();
+        bob.add_contact(alice.public_identity(), "Alice").unwrap();
+
+        let actions = alice.send_text(bob.user_id(), "Are you safe?").unwrap();
+        assert!(actions
+            .iter()
+            .any(|action| matches!(action, CoreAction::MessageUpdated { .. })));
+        assert_eq!(alice.plaintext_messages().unwrap()[0].text, "Are you safe?");
+
+        let bundle = alice.stored_bundles().unwrap()[0].bundle.clone();
+        let bob_actions = bob.accept_bundle(&bundle).unwrap();
+        assert!(bob_actions
+            .iter()
+            .any(|action| matches!(action, CoreAction::MessageReceived { .. })));
+        assert_eq!(bob.plaintext_messages().unwrap()[0].text, "Are you safe?");
+        assert_eq!(
+            bob.plaintext_messages().unwrap()[0].sender_id,
+            alice.user_id()
+        );
+
+        charlie.accept_bundle(&bundle).unwrap();
+        assert!(charlie.plaintext_messages().unwrap().is_empty());
+        assert_eq!(charlie.stored_bundles().unwrap().len(), 1);
+        assert_eq!(
+            charlie.stored_bundles().unwrap()[0].bundle.relay.hop_count,
+            1
+        );
     }
 
     #[test]
-    fn signed_encrypted_bundle_is_only_readable_by_recipient() {
-        use mesh_crypto::{
-            conversation_id, open_message, seal_message_with, verify_signature, Identity,
-        };
-        use mesh_types::{ConversationId, MessageId};
-        use mesh_wire::{DirectMessagePayload, SealedPayload, DIRECT_MESSAGE_VERSION};
-
-        let alice = Identity::from_seeds(seed(0x00), seed(0x20));
-        let bob = Identity::from_seeds(seed(0x40), seed(0x60));
-        let charlie = Identity::from_seeds(seed(0xc0), seed(0xe0));
-
-        let payload = DirectMessagePayload {
-            version: DIRECT_MESSAGE_VERSION,
-            message_id: MessageId::from_bytes([0x10; 16]),
-            conversation_id: conversation_id(alice.user_id(), bob.user_id()),
-            sender_id: alice.user_id(),
-            recipient_id: bob.user_id(),
-            sequence: 1,
-            sent_at_ms: 1_700_000_000_000,
-            content_type: "text/plain".into(),
-            content: b"Are you safe?".to_vec(),
-        };
-        let plaintext = payload.encode_cbor();
-        let sealed = seal_message_with(
-            bob.encryption_public(),
-            &plaintext,
-            seed(0x80),
-            [
-                0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab,
-            ],
-        )
-        .unwrap();
-        let encrypted_payload = SealedPayload {
-            ephemeral_public: sealed.ephemeral_public,
-            nonce: sealed.nonce,
-            ciphertext: sealed.ciphertext.clone(),
-        }
-        .encode_cbor();
-
-        let mut bundle = WireBundle {
-            immutable: ImmutableBundleHeader {
-                protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
-                bundle_id: BundleId::from_bytes([0x31; 16]),
-                bundle_type: BundleType::DirectMessage,
-                sender_id: alice.user_id(),
-                destination_id: bob.user_id(),
-                created_at_ms: 1_700_000_000_000,
-                ttl_seconds: 60,
-                hop_limit: 20,
-                priority: Priority::Normal,
-                payload_length: encrypted_payload.len() as u32,
-            },
-            relay: RelayHeader {
-                hop_count: 0,
-                received_at_ms: 1_700_000_000_000,
-            },
-            encrypted_payload,
-            sender_signature: vec![0; 64],
-        };
-        bundle.sender_signature = alice.sign(&bundle.signed_bytes().unwrap()).to_vec();
-
-        verify_signature(
-            alice.signing_public(),
-            &bundle.signed_bytes().unwrap(),
-            bundle.sender_signature.as_slice().try_into().unwrap(),
-        )
-        .unwrap();
-
-        bundle.relay.hop_count = 4;
-        verify_signature(
-            alice.signing_public(),
-            &bundle.signed_bytes().unwrap(),
-            bundle.sender_signature.as_slice().try_into().unwrap(),
-        )
-        .unwrap();
-
-        let opened = open_message(&bob, &sealed).unwrap();
-        let decoded = DirectMessagePayload::decode_cbor(&opened).unwrap();
-        assert_eq!(decoded.content, b"Are you safe?");
-        assert_eq!(
-            decoded.conversation_id,
-            ConversationId::from_bytes(*conversation_id(bob.user_id(), alice.user_id()).as_bytes())
-        );
-        assert!(open_message(&charlie, &sealed).is_err());
-
-        bundle.encrypted_payload[0] ^= 1;
-        assert!(verify_signature(
-            alice.signing_public(),
-            &bundle.signed_bytes().unwrap(),
-            bundle.sender_signature.as_slice().try_into().unwrap(),
-        )
-        .is_err());
+    fn send_text_requires_a_contact() {
+        let alice_id = Identity::from_seeds(seed(0x00), seed(0x20));
+        let bob_id = Identity::from_seeds(seed(0x40), seed(0x60));
+        let mut alice = test_core(alice_id, 10);
+        let err = alice
+            .send_text(bob_id.user_id(), "Are you safe?")
+            .unwrap_err();
+        assert!(matches!(err, CoreError::UnknownContact(_)));
     }
 }

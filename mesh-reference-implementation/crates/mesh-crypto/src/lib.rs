@@ -11,8 +11,8 @@ pub use identity::{
     conversation_id, derive_user_id, fingerprint, verify_signature, Identity, PublicIdentity,
 };
 pub use message::{
-    open_message, seal_message, seal_message_with, SealedMessage, MESSAGE_KDF_INFO,
-    MESSAGE_KDF_SALT,
+    open_local, open_message, seal_local, seal_message, seal_message_with, SealedMessage,
+    MESSAGE_KDF_INFO, MESSAGE_KDF_SALT,
 };
 
 #[derive(Debug, Error, PartialEq, Eq)]
