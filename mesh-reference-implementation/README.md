@@ -1,21 +1,23 @@
 # Mesh Reference Implementation
 
-Initial Rust workspace for Mesh Protocol 1.0.
+Rust workspace for Mesh Protocol 1.0.
 
 ## Current milestone
 
-This skeleton implements:
+This workspace implements:
 
 - strongly typed 128-bit identifiers;
-- protocol bundle metadata and priorities;
-- CBOR bundle encoding/decoding;
+- canonical CBOR Bundles with numeric keys;
+- Ed25519 identity, X25519 recipient encryption, HKDF-SHA256 and ChaCha20-Poly1305;
+- signed immutable headers (relay hop count is unsigned);
+- DirectMessage payload encoding;
+- deterministic crypto test vectors;
 - SQLite-backed bundle/tombstone storage;
 - controlled-epidemic routing decisions;
 - an event/action `MeshCore` shell;
-- initial unit tests;
 - a thin UniFFI-ready bindings crate.
 
-Cryptographic message/session implementation and mobile transports intentionally come next.
+`MeshCore::send_text()`, session HELLO frames and mobile transports come next.
 
 ## Build
 
@@ -29,7 +31,7 @@ cargo test --workspace
 
 ## Architecture
 
-Native Android/iOS code owns radios, permissions, secure OS storage and UI. Rust owns protocol state, routing, bundle persistence and later cryptography.
+Native Android/iOS code owns radios, permissions, secure OS storage and UI. Rust owns protocol state, routing, bundle persistence and cryptography.
 
 ```text
 Native UI / transport
@@ -39,8 +41,8 @@ Native UI / transport
        |
        v
     mesh-core
-   /    |     \
-wire  routing  store
-  \      |      /
+   /   |    \   \
+wire routing store crypto
+  \    |     /    /
       mesh-types
 ```

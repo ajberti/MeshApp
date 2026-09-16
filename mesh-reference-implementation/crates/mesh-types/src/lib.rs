@@ -53,19 +53,14 @@ pub enum BundleType {
     Control = 0x04,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Priority {
     Bulk = 0,
+    #[default]
     Normal = 1,
     High = 2,
     Emergency = 3,
-}
-
-impl Default for Priority {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

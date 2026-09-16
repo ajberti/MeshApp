@@ -38,7 +38,9 @@ impl MeshStore {
         self.conn.execute_batch(MIGRATION_0001)?;
         let version: Option<i64> = self
             .conn
-            .query_row("SELECT version FROM schema_meta LIMIT 1", [], |row| row.get(0))
+            .query_row("SELECT version FROM schema_meta LIMIT 1", [], |row| {
+                row.get(0)
+            })
             .optional()?;
         if version.is_none() {
             self.conn

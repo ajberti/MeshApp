@@ -6,6 +6,4 @@ license.workspace = true
 
 [dependencies]
 mesh-types = { path = "../mesh-types" }
-serde.workspace = true
-serde_cbor.workspace = true
 thiserror.workspace = true

@@ -56,13 +56,29 @@ pub enum CoreEvent {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CoreAction {
-    Connect { peer_token: Vec<u8> },
-    SendBytes { link_id: LinkId, data: Vec<u8> },
-    CloseLink { link_id: LinkId },
-    BundleStored { bundle_id: BundleId },
-    BundleDuplicate { bundle_id: BundleId },
-    BundleReadyForPeer { link_id: LinkId, bundle_id: BundleId },
-    Log { code: String },
+    Connect {
+        peer_token: Vec<u8>,
+    },
+    SendBytes {
+        link_id: LinkId,
+        data: Vec<u8>,
+    },
+    CloseLink {
+        link_id: LinkId,
+    },
+    BundleStored {
+        bundle_id: BundleId,
+    },
+    BundleDuplicate {
+        bundle_id: BundleId,
+    },
+    BundleReadyForPeer {
+        link_id: LinkId,
+        bundle_id: BundleId,
+    },
+    Log {
+        code: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -168,7 +184,9 @@ impl MeshCore {
     ) -> Result<Vec<CoreAction>, CoreError> {
         let bundle = WireBundle::decode_cbor(data)?;
         let bundle_id = bundle.immutable.bundle_id;
-        let outcome = self.store.insert_bundle(&bundle, bundle.relay.received_at_ms)?;
+        let outcome = self
+            .store
+            .insert_bundle(&bundle, bundle.relay.received_at_ms)?;
         Ok(match outcome {
             InsertOutcome::Inserted => vec![CoreAction::BundleStored { bundle_id }],
             InsertOutcome::Duplicate | InsertOutcome::RejectedTombstoned => {
@@ -196,7 +214,10 @@ impl MeshCore {
                     &peer,
                     now_ms,
                 );
-                if matches!(decision, RoutingDecision::SendImmediately | RoutingDecision::Offer) {
+                if matches!(
+                    decision,
+                    RoutingDecision::SendImmediately | RoutingDecision::Offer
+                ) {
                     candidates.push((
                         ControlledEpidemicRouter::transfer_rank(&stored.bundle, &peer),
                         stored.first_seen_at_ms,
@@ -222,7 +243,10 @@ impl MeshCore {
         user_id: Option<UserId>,
         bundle_ids: impl IntoIterator<Item = BundleId>,
     ) -> Result<(), CoreError> {
-        let link = self.links.get_mut(&link_id).ok_or(CoreError::UnknownLink(link_id))?;
+        let link = self
+            .links
+            .get_mut(&link_id)
+            .ok_or(CoreError::UnknownLink(link_id))?;
         link.user_id = user_id;
         link.known_bundle_ids = bundle_ids.into_iter().collect();
         Ok(())
@@ -304,7 +328,8 @@ mod tests {
             peer_token: b"peer".to_vec(),
         })
         .unwrap();
-        core.set_peer_inventory(link, Some(destination), []).unwrap();
+        core.set_peer_inventory(link, Some(destination), [])
+            .unwrap();
 
         let actions = core.process_event(CoreEvent::Tick { now_ms: 1 }).unwrap();
         assert_eq!(
@@ -314,5 +339,109 @@ mod tests {
                 bundle_id: bundle.immutable.bundle_id,
             }]
         );
+    }
+
+    fn seed(start: u8) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        for (i, slot) in bytes.iter_mut().enumerate() {
+            *slot = start.wrapping_add(i as u8);
+        }
+        bytes
+    }
+
+    #[test]
+    fn signed_encrypted_bundle_is_only_readable_by_recipient() {
+        use mesh_crypto::{
+            conversation_id, open_message, seal_message_with, verify_signature, Identity,
+        };
+        use mesh_types::{ConversationId, MessageId};
+        use mesh_wire::{DirectMessagePayload, SealedPayload, DIRECT_MESSAGE_VERSION};
+
+        let alice = Identity::from_seeds(seed(0x00), seed(0x20));
+        let bob = Identity::from_seeds(seed(0x40), seed(0x60));
+        let charlie = Identity::from_seeds(seed(0xc0), seed(0xe0));
+
+        let payload = DirectMessagePayload {
+            version: DIRECT_MESSAGE_VERSION,
+            message_id: MessageId::from_bytes([0x10; 16]),
+            conversation_id: conversation_id(alice.user_id(), bob.user_id()),
+            sender_id: alice.user_id(),
+            recipient_id: bob.user_id(),
+            sequence: 1,
+            sent_at_ms: 1_700_000_000_000,
+            content_type: "text/plain".into(),
+            content: b"Are you safe?".to_vec(),
+        };
+        let plaintext = payload.encode_cbor();
+        let sealed = seal_message_with(
+            bob.encryption_public(),
+            &plaintext,
+            seed(0x80),
+            [
+                0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab,
+            ],
+        )
+        .unwrap();
+        let encrypted_payload = SealedPayload {
+            ephemeral_public: sealed.ephemeral_public,
+            nonce: sealed.nonce,
+            ciphertext: sealed.ciphertext.clone(),
+        }
+        .encode_cbor();
+
+        let mut bundle = WireBundle {
+            immutable: ImmutableBundleHeader {
+                protocol_major: PROTOCOL_MAJOR,
+                protocol_minor: PROTOCOL_MINOR,
+                bundle_id: BundleId::from_bytes([0x31; 16]),
+                bundle_type: BundleType::DirectMessage,
+                sender_id: alice.user_id(),
+                destination_id: bob.user_id(),
+                created_at_ms: 1_700_000_000_000,
+                ttl_seconds: 60,
+                hop_limit: 20,
+                priority: Priority::Normal,
+                payload_length: encrypted_payload.len() as u32,
+            },
+            relay: RelayHeader {
+                hop_count: 0,
+                received_at_ms: 1_700_000_000_000,
+            },
+            encrypted_payload,
+            sender_signature: vec![0; 64],
+        };
+        bundle.sender_signature = alice.sign(&bundle.signed_bytes().unwrap()).to_vec();
+
+        verify_signature(
+            alice.signing_public(),
+            &bundle.signed_bytes().unwrap(),
+            bundle.sender_signature.as_slice().try_into().unwrap(),
+        )
+        .unwrap();
+
+        bundle.relay.hop_count = 4;
+        verify_signature(
+            alice.signing_public(),
+            &bundle.signed_bytes().unwrap(),
+            bundle.sender_signature.as_slice().try_into().unwrap(),
+        )
+        .unwrap();
+
+        let opened = open_message(&bob, &sealed).unwrap();
+        let decoded = DirectMessagePayload::decode_cbor(&opened).unwrap();
+        assert_eq!(decoded.content, b"Are you safe?");
+        assert_eq!(
+            decoded.conversation_id,
+            ConversationId::from_bytes(*conversation_id(bob.user_id(), alice.user_id()).as_bytes())
+        );
+        assert!(open_message(&charlie, &sealed).is_err());
+
+        bundle.encrypted_payload[0] ^= 1;
+        assert!(verify_signature(
+            alice.signing_public(),
+            &bundle.signed_bytes().unwrap(),
+            bundle.sender_signature.as_slice().try_into().unwrap(),
+        )
+        .is_err());
     }
 }
