@@ -1,0 +1,12 @@
+[package]
+name = "mesh-bindings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+uniffi.workspace = true

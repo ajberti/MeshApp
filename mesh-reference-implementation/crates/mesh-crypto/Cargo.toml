@@ -1,0 +1,10 @@
+[package]
+name = "mesh-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mesh-types = { path = "../mesh-types" }
+sha2.workspace = true
+thiserror.workspace = true
