@@ -2,21 +2,25 @@ use mesh_crypto::{
     conversation_id, open_local, open_message, seal_local, seal_message, verify_signature,
     CryptoError, Identity, PublicIdentity, SealedMessage,
 };
-use mesh_routing::{ControlledEpidemicRouter, PeerContext, RoutingDecision};
+use mesh_routing::{ControlledEpidemicRouter, RoutingDecision};
 use mesh_store::{InsertOutcome, MeshStore, StoreError, StoredContact, StoredMessageRow};
 use mesh_types::{
     BundleId, BundleType, ConversationId, DiscoveryId, LinkId, MessageDirection, MessageId,
     MessageState, Priority, TrustState, UserId,
 };
 use mesh_wire::{
-    DirectMessagePayload, ImmutableBundleHeader, RelayHeader, SealedPayload, WireBundle, WireError,
+    BundleData, BundleIdPayload, BundleOffer, DirectMessagePayload, Frame, FrameType,
+    ImmutableBundleHeader, InventorySummary, RelayHeader, SealedPayload, WireBundle, WireError,
     DIRECT_MESSAGE_VERSION, PROTOCOL_MAJOR, PROTOCOL_MINOR,
 };
 use rand_core::{CryptoRng, OsRng, RngCore};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+
+mod session;
+use session::{MeshSession, SessionEvent};
 
 #[derive(Clone, Debug)]
 pub struct MeshConfig {
@@ -224,19 +228,13 @@ pub struct PlaintextMessage {
     pub text: String,
 }
 
-#[derive(Clone, Debug)]
-struct LinkState {
-    user_id: Option<UserId>,
-    known_bundle_ids: HashSet<BundleId>,
-}
-
 pub struct MeshCore {
     identity: Identity,
     local_data_key: [u8; 32],
     store: MeshStore,
     router: ControlledEpidemicRouter,
     peers: HashMap<Vec<u8>, DiscoveryId>,
-    links: HashMap<LinkId, LinkState>,
+    links: HashMap<LinkId, MeshSession>,
     local_discovery_id: DiscoveryId,
     clock: MeshClock,
     rng: MeshRng,
@@ -396,27 +394,26 @@ impl MeshCore {
             }
             CoreEvent::LinkOpened {
                 link_id,
-                peer_token: _,
+                peer_token,
             } => {
-                self.links.insert(
-                    link_id,
-                    LinkState {
-                        user_id: None,
-                        known_bundle_ids: HashSet::new(),
+                let (session, hello) =
+                    MeshSession::open(link_id, peer_token, self.local_discovery_id, &mut self.rng);
+                self.links.insert(link_id, session);
+                Ok(vec![
+                    CoreAction::SendBytes {
+                        link_id,
+                        data: hello.encode()?,
                     },
-                );
-                Ok(vec![CoreAction::Log {
-                    code: "LINK_OPENED".into(),
-                }])
+                    CoreAction::Log {
+                        code: "LINK_OPENED".into(),
+                    },
+                ])
             }
             CoreEvent::LinkClosed { link_id } => {
                 self.links.remove(&link_id);
                 Ok(Vec::new())
             }
-            CoreEvent::BytesReceived { link_id: _, data } => {
-                let bundle = WireBundle::decode_cbor(&data)?;
-                self.ingest_bundle(bundle)
-            }
+            CoreEvent::BytesReceived { link_id, data } => self.on_bytes(link_id, data),
             CoreEvent::SendText { recipient, text } => self.compose_text(recipient, text),
             CoreEvent::Tick { now_ms } => self.plan_transfers(now_ms),
         }
@@ -606,15 +603,231 @@ impl MeshCore {
         bytes
     }
 
+    fn on_bytes(&mut self, link_id: LinkId, data: Vec<u8>) -> Result<Vec<CoreAction>, CoreError> {
+        let frame = Frame::decode(&data)?;
+        let result = {
+            let session = self
+                .links
+                .get_mut(&link_id)
+                .ok_or(CoreError::UnknownLink(link_id))?;
+            session.handle_frame(frame, &mut self.rng)
+        };
+        match result {
+            Ok(events) => self.dispatch_session_events(link_id, events),
+            Err(err) => {
+                self.links.remove(&link_id);
+                Err(err)
+            }
+        }
+    }
+
+    fn dispatch_session_events(
+        &mut self,
+        link_id: LinkId,
+        events: Vec<SessionEvent>,
+    ) -> Result<Vec<CoreAction>, CoreError> {
+        let mut actions = Vec::new();
+        for event in events {
+            match event {
+                SessionEvent::Send(frame) => {
+                    actions.push(CoreAction::SendBytes {
+                        link_id,
+                        data: frame.encode()?,
+                    });
+                }
+                SessionEvent::Established => {
+                    actions.push(CoreAction::Log {
+                        code: "SESSION_ESTABLISHED".into(),
+                    });
+                    actions.extend(self.send_inventory(link_id)?);
+                }
+                SessionEvent::PeerInventory(ids) => {
+                    if let Some(session) = self.links.get_mut(&link_id) {
+                        session.set_known_ids(ids);
+                    }
+                    actions.extend(self.send_offers(link_id)?);
+                }
+                SessionEvent::Offer(offer) => {
+                    actions.extend(self.on_bundle_offer(link_id, offer)?);
+                }
+                SessionEvent::Request(bundle_id) => {
+                    actions.extend(self.on_bundle_request(link_id, bundle_id)?);
+                }
+                SessionEvent::Data(data) => {
+                    actions.extend(self.on_bundle_data(link_id, data)?);
+                }
+                SessionEvent::Complete(bundle_id) => {
+                    self.store.increment_forward_count(bundle_id)?;
+                    if let Some(session) = self.links.get_mut(&link_id) {
+                        session.note_peer_has(bundle_id);
+                    }
+                }
+                SessionEvent::Close => {
+                    self.links.remove(&link_id);
+                    actions.push(CoreAction::CloseLink { link_id });
+                }
+            }
+        }
+        Ok(actions)
+    }
+
+    fn send_secure(
+        &mut self,
+        link_id: LinkId,
+        ty: FrameType,
+        payload: Vec<u8>,
+    ) -> Result<CoreAction, CoreError> {
+        let session = self
+            .links
+            .get_mut(&link_id)
+            .ok_or(CoreError::UnknownLink(link_id))?;
+        let frame = session.encrypt(ty, payload)?;
+        Ok(CoreAction::SendBytes {
+            link_id,
+            data: frame.encode()?,
+        })
+    }
+
+    fn send_inventory(&mut self, link_id: LinkId) -> Result<Vec<CoreAction>, CoreError> {
+        let bundle_ids = self
+            .store
+            .list_bundles()?
+            .into_iter()
+            .map(|stored| stored.bundle.immutable.bundle_id)
+            .collect();
+        let payload = InventorySummary { bundle_ids }.encode();
+        Ok(vec![self.send_secure(
+            link_id,
+            FrameType::InventorySummary,
+            payload,
+        )?])
+    }
+
+    fn send_offers(&mut self, link_id: LinkId) -> Result<Vec<CoreAction>, CoreError> {
+        let peer = self
+            .links
+            .get(&link_id)
+            .ok_or(CoreError::UnknownLink(link_id))?
+            .peer_context();
+        let now = self.clock.now_ms();
+        let mut offers = Vec::new();
+        for stored in self.store.list_bundles()? {
+            let decision = self.router.evaluate(
+                &stored.bundle,
+                stored.first_seen_at_ms,
+                stored.forward_count,
+                &peer,
+                now,
+            );
+            if matches!(
+                decision,
+                RoutingDecision::SendImmediately | RoutingDecision::Offer
+            ) {
+                let encoded = stored.bundle.encode_cbor()?;
+                offers.push(BundleOffer {
+                    bundle_id: stored.bundle.immutable.bundle_id,
+                    bundle_type: stored.bundle.immutable.bundle_type,
+                    destination_id: stored.bundle.immutable.destination_id,
+                    size: encoded.len() as u32,
+                    priority: stored.bundle.immutable.priority,
+                    hop_count: stored.bundle.relay.hop_count,
+                });
+            }
+        }
+        let mut actions = Vec::new();
+        for offer in &offers {
+            actions.push(CoreAction::BundleReadyForPeer {
+                link_id,
+                bundle_id: offer.bundle_id,
+            });
+            actions.push(self.send_secure(link_id, FrameType::BundleOffer, offer.encode())?);
+        }
+        Ok(actions)
+    }
+
+    fn on_bundle_offer(
+        &mut self,
+        link_id: LinkId,
+        offer: BundleOffer,
+    ) -> Result<Vec<CoreAction>, CoreError> {
+        if self.store.contains_bundle(offer.bundle_id)?
+            || self.store.is_tombstoned(offer.bundle_id)?
+        {
+            return Ok(Vec::new());
+        }
+        if let Some(session) = self.links.get_mut(&link_id) {
+            session.note_offer(&offer);
+        }
+        let payload = BundleIdPayload {
+            bundle_id: offer.bundle_id,
+        }
+        .encode();
+        Ok(vec![self.send_secure(
+            link_id,
+            FrameType::BundleRequest,
+            payload,
+        )?])
+    }
+
+    fn on_bundle_request(
+        &mut self,
+        link_id: LinkId,
+        bundle_id: BundleId,
+    ) -> Result<Vec<CoreAction>, CoreError> {
+        let Some(stored) = self.store.get_bundle(bundle_id)? else {
+            return Ok(Vec::new());
+        };
+        let encoded = stored.bundle.encode_cbor()?;
+        let chunk = self
+            .links
+            .get(&link_id)
+            .ok_or(CoreError::UnknownLink(link_id))?
+            .plaintext_chunk_size();
+        let mut actions = Vec::new();
+        let mut offset = 0u32;
+        while (offset as usize) < encoded.len() {
+            let end = (offset as usize + chunk).min(encoded.len());
+            let payload = BundleData {
+                bundle_id,
+                offset,
+                data: encoded[offset as usize..end].to_vec(),
+            }
+            .encode();
+            actions.push(self.send_secure(link_id, FrameType::BundleData, payload)?);
+            offset = end as u32;
+        }
+        Ok(actions)
+    }
+
+    fn on_bundle_data(
+        &mut self,
+        link_id: LinkId,
+        data: BundleData,
+    ) -> Result<Vec<CoreAction>, CoreError> {
+        let bundle_id = data.bundle_id;
+        let complete = {
+            let session = self
+                .links
+                .get_mut(&link_id)
+                .ok_or(CoreError::UnknownLink(link_id))?;
+            session.append_data(&data)?
+        };
+        let mut actions = Vec::new();
+        if let Some(bytes) = complete {
+            let bundle = WireBundle::decode_cbor(&bytes)?;
+            actions.extend(self.ingest_bundle(bundle)?);
+            let payload = BundleIdPayload { bundle_id }.encode();
+            actions.push(self.send_secure(link_id, FrameType::BundleComplete, payload)?);
+        }
+        Ok(actions)
+    }
+
     fn plan_transfers(&self, now_ms: i64) -> Result<Vec<CoreAction>, CoreError> {
         let bundles = self.store.list_bundles()?;
         let mut actions = Vec::new();
 
         for (link_id, link) in &self.links {
-            let peer = PeerContext {
-                user_id: link.user_id,
-                known_bundle_ids: link.known_bundle_ids.clone(),
-            };
+            let peer = link.peer_context();
 
             let mut candidates = Vec::new();
             for stored in &bundles {
@@ -658,8 +871,7 @@ impl MeshCore {
             .links
             .get_mut(&link_id)
             .ok_or(CoreError::UnknownLink(link_id))?;
-        link.user_id = user_id;
-        link.known_bundle_ids = bundle_ids.into_iter().collect();
+        link.set_inventory(user_id, bundle_ids);
         Ok(())
     }
 
@@ -704,6 +916,8 @@ pub enum CoreError {
     InvalidMessage,
     #[error("unknown link {0:?}")]
     UnknownLink(LinkId),
+    #[error("mesh session error")]
+    Session,
 }
 
 #[cfg(test)]
@@ -830,5 +1044,155 @@ mod tests {
             .send_text(bob_id.user_id(), "Are you safe?")
             .unwrap_err();
         assert!(matches!(err, CoreError::UnknownContact(_)));
+    }
+
+    fn drain_sends(
+        actions: &mut Vec<CoreAction>,
+        link_id: LinkId,
+        inbox: &mut std::collections::VecDeque<Vec<u8>>,
+        collected: &mut Vec<CoreAction>,
+    ) {
+        for action in actions.drain(..) {
+            match action {
+                CoreAction::SendBytes { link_id: id, data } if id == link_id => {
+                    inbox.push_back(data)
+                }
+                other => collected.push(other),
+            }
+        }
+    }
+
+    fn pump_until_idle(
+        alice: &mut MeshCore,
+        bob: &mut MeshCore,
+        a_link: LinkId,
+        b_link: LinkId,
+        mut a_actions: Vec<CoreAction>,
+        mut b_actions: Vec<CoreAction>,
+    ) -> (Vec<CoreAction>, Vec<CoreAction>) {
+        let mut a_inbox = std::collections::VecDeque::new();
+        let mut b_inbox = std::collections::VecDeque::new();
+        let mut a_seen = Vec::new();
+        let mut b_seen = Vec::new();
+        loop {
+            drain_sends(&mut a_actions, a_link, &mut b_inbox, &mut a_seen);
+            drain_sends(&mut b_actions, b_link, &mut a_inbox, &mut b_seen);
+            let mut progress = false;
+            if let Some(data) = a_inbox.pop_front() {
+                a_actions = alice
+                    .process_event(CoreEvent::BytesReceived {
+                        link_id: a_link,
+                        data,
+                    })
+                    .unwrap();
+                progress = true;
+            }
+            if let Some(data) = b_inbox.pop_front() {
+                b_actions = bob
+                    .process_event(CoreEvent::BytesReceived {
+                        link_id: b_link,
+                        data,
+                    })
+                    .unwrap();
+                progress = true;
+            }
+            if !progress {
+                break;
+            }
+        }
+        (a_seen, b_seen)
+    }
+
+    #[test]
+    fn session_transfers_send_text_to_peer() {
+        let alice_id = Identity::from_seeds(seed(0x00), seed(0x20));
+        let bob_id = Identity::from_seeds(seed(0x40), seed(0x60));
+        let mut alice = test_core(alice_id, 10);
+        let mut bob = test_core(bob_id, 11);
+        alice.add_contact(bob.public_identity(), "Bob").unwrap();
+        bob.add_contact(alice.public_identity(), "Alice").unwrap();
+        alice.send_text(bob.user_id(), "Are you safe?").unwrap();
+
+        let a_link = LinkId(1);
+        let b_link = LinkId(1);
+        let a_actions = alice
+            .process_event(CoreEvent::LinkOpened {
+                link_id: a_link,
+                peer_token: b"bob".to_vec(),
+            })
+            .unwrap();
+        let b_actions = bob
+            .process_event(CoreEvent::LinkOpened {
+                link_id: b_link,
+                peer_token: b"alice".to_vec(),
+            })
+            .unwrap();
+        let (_a_seen, b_seen) =
+            pump_until_idle(&mut alice, &mut bob, a_link, b_link, a_actions, b_actions);
+
+        assert!(b_seen
+            .iter()
+            .any(|action| matches!(action, CoreAction::MessageReceived { .. })));
+        assert_eq!(bob.plaintext_messages().unwrap()[0].text, "Are you safe?");
+        assert_eq!(
+            bob.plaintext_messages().unwrap()[0].sender_id,
+            alice.user_id()
+        );
+    }
+
+    #[test]
+    fn session_relays_ciphertext_without_reading_it() {
+        let alice_id = Identity::from_seeds(seed(0x00), seed(0x20));
+        let bob_id = Identity::from_seeds(seed(0x40), seed(0x60));
+        let charlie_id = Identity::from_seeds(seed(0xc0), seed(0xe0));
+        let mut alice = test_core(alice_id, 10);
+        let mut bob = test_core(bob_id, 11);
+        let mut charlie = test_core(charlie_id, 12);
+        alice.add_contact(bob.public_identity(), "Bob").unwrap();
+        bob.add_contact(alice.public_identity(), "Alice").unwrap();
+        alice.send_text(bob.user_id(), "Are you safe?").unwrap();
+
+        let ac = LinkId(1);
+        let ca = LinkId(1);
+        let a_actions = alice
+            .process_event(CoreEvent::LinkOpened {
+                link_id: ac,
+                peer_token: b"charlie".to_vec(),
+            })
+            .unwrap();
+        let c_actions = charlie
+            .process_event(CoreEvent::LinkOpened {
+                link_id: ca,
+                peer_token: b"alice".to_vec(),
+            })
+            .unwrap();
+        pump_until_idle(&mut alice, &mut charlie, ac, ca, a_actions, c_actions);
+        assert!(charlie.plaintext_messages().unwrap().is_empty());
+        assert_eq!(charlie.stored_bundles().unwrap().len(), 1);
+        assert_eq!(
+            charlie.stored_bundles().unwrap()[0].bundle.relay.hop_count,
+            1
+        );
+
+        let cb = LinkId(2);
+        let bc = LinkId(2);
+        let c_actions = charlie
+            .process_event(CoreEvent::LinkOpened {
+                link_id: cb,
+                peer_token: b"bob".to_vec(),
+            })
+            .unwrap();
+        let b_actions = bob
+            .process_event(CoreEvent::LinkOpened {
+                link_id: bc,
+                peer_token: b"charlie".to_vec(),
+            })
+            .unwrap();
+        let (_c_seen, b_seen) =
+            pump_until_idle(&mut charlie, &mut bob, cb, bc, c_actions, b_actions);
+        assert!(b_seen
+            .iter()
+            .any(|action| matches!(action, CoreAction::MessageReceived { .. })));
+        assert_eq!(bob.plaintext_messages().unwrap()[0].text, "Are you safe?");
     }
 }

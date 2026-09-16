@@ -15,9 +15,10 @@ This workspace implements:
 - SQLite-backed bundle/tombstone storage;
 - controlled-epidemic routing decisions;
 - an event/action `MeshCore` shell with identity, contacts and `send_text()`;
+- Mesh Session frames (`0x4D50`), link keys, inventory and in-process Bundle transfer;
 - a thin UniFFI-ready bindings crate.
 
-`MeshCore::send_text()` composes, encrypts, signs and stores a Bundle with no radio. The destination decrypts locally after a contact is added. Session HELLO frames and mobile transports come next.
+`MeshCore::send_text()` composes, encrypts, signs and stores a Bundle. Two in-process cores can then open a Mesh Session (`HELLO` → `KEY_INIT`/`KEY_REPLY` → `SESSION_OK`), exchange an explicit Bundle ID inventory, and transfer the Bundle over ChaCha20-Poly1305 frames. Nearby Connections and native apps come next.
 
 ## Build
 

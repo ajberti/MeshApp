@@ -142,6 +142,32 @@ impl MeshStore {
         Ok(result)
     }
 
+    pub fn get_bundle(&self, bundle_id: BundleId) -> Result<Option<StoredBundle>, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT encoded_bundle, first_seen_at_ms, forward_count \
+                 FROM bundles WHERE bundle_id = ?1",
+                params![bundle_id.as_bytes().as_slice()],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, u32>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(|(bytes, first_seen_at_ms, forward_count)| {
+            Ok(StoredBundle {
+                bundle: WireBundle::decode_cbor(&bytes)?,
+                first_seen_at_ms,
+                forward_count,
+            })
+        })
+        .transpose()
+    }
+
     pub fn increment_forward_count(&self, bundle_id: BundleId) -> Result<(), StoreError> {
         self.conn.execute(
             "UPDATE bundles SET forward_count = forward_count + 1 WHERE bundle_id = ?1",
@@ -513,6 +539,14 @@ mod tests {
         assert_eq!(
             store.insert_bundle(&bundle, 0).unwrap(),
             InsertOutcome::Duplicate
+        );
+        let loaded = store
+            .get_bundle(bundle.immutable.bundle_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            loaded.bundle.immutable.bundle_id,
+            bundle.immutable.bundle_id
         );
     }
 

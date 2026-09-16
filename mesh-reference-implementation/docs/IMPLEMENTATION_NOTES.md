@@ -28,6 +28,21 @@ Local conversation copies are encrypted at rest with XChaCha20-Poly1305 and a 25
 
 Clock and RNG are injected (`MeshClock`, `MeshRng`) so tests can be deterministic.
 
+## Milestone 4
+
+A Mesh Session is established on `LinkOpened`. Both sides send `HELLO`; the node with the smaller Discovery ID sends `KEY_INIT`. Session keys are HKDF-SHA256 of the X25519 shared secret with the ordered HELLO bytes and ephemeral public keys as context. Subsequent frames set flag `0x01` and use ChaCha20-Poly1305 with nonce `0x00000000 || counter_be`. After `SESSION_OK` each side sends an explicit Bundle ID inventory (no Bloom filters), then `BUNDLE_OFFER` / `REQUEST` / `DATA` / `COMPLETE`.
+
+```text
+HKDF-SHA256
+  IKM  = X25519(local_ephemeral, remote_ephemeral)
+  salt = "MeshProtocol-1.0"
+  info = "session-key-lo-hi-v1" || transcript
+       | "session-key-hi-lo-v1" || transcript
+AEAD   = ChaCha20-Poly1305
+  nonce = 4 zero bytes || 8-byte big-endian counter
+  AAD   = major || minor || frame_type || flags
+```
+
 ## Critical invariants
 
 1. Bundle IDs and message IDs are distinct types.

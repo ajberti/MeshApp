@@ -17,6 +17,7 @@ const MAJOR_SIMPLE: u8 = 7;
 const ADDITIONAL_INDEFINITE: u8 = 31;
 const MAX_SKIP_DEPTH: u8 = 8;
 const MAX_MAP_ENTRIES: u64 = 64;
+const MAX_ARRAY_ENTRIES: u64 = 1024;
 const MAX_VALUE_BYTES: usize = 64 * 1024 + 4096;
 
 pub struct CborWriter {
@@ -34,6 +35,10 @@ impl CborWriter {
 
     pub fn map(&mut self, len: u64) {
         self.write_header(MAJOR_MAP, len);
+    }
+
+    pub fn array(&mut self, len: u64) {
+        self.write_header(MAJOR_ARRAY, len);
     }
 
     pub fn u64(&mut self, value: u64) {
@@ -108,6 +113,17 @@ impl<'a> CborReader<'a> {
         Ok(value)
     }
 
+    pub fn array(&mut self) -> Result<u64, WireError> {
+        let (major, value) = self.read_header()?;
+        if major != MAJOR_ARRAY {
+            return Err(WireError::UnexpectedCborType);
+        }
+        if value > MAX_ARRAY_ENTRIES {
+            return Err(WireError::CborLimit);
+        }
+        Ok(value)
+    }
+
     pub fn u64(&mut self) -> Result<u64, WireError> {
         let (major, value) = self.read_header()?;
         if major != MAJOR_UNSIGNED {
@@ -161,6 +177,9 @@ impl<'a> CborReader<'a> {
                 Ok(())
             }
             MAJOR_ARRAY => {
+                if value > MAX_ARRAY_ENTRIES {
+                    return Err(WireError::CborLimit);
+                }
                 for _ in 0..value {
                     self.skip_value_at_depth(depth + 1)?;
                 }
@@ -278,5 +297,19 @@ mod tests {
     fn rejects_indefinite_maps() {
         let mut r = CborReader::new(&[0xbf]);
         assert!(matches!(r.map(), Err(WireError::IndefiniteCbor)));
+    }
+
+    #[test]
+    fn array_round_trip() {
+        let mut w = CborWriter::new();
+        w.array(2);
+        w.bytes(&[1, 2]);
+        w.bytes(&[3]);
+        let encoded = w.into_inner();
+        let mut r = CborReader::new(&encoded);
+        assert_eq!(r.array().unwrap(), 2);
+        assert_eq!(r.bytes().unwrap(), &[1, 2]);
+        assert_eq!(r.bytes().unwrap(), &[3]);
+        r.finish().unwrap();
     }
 }

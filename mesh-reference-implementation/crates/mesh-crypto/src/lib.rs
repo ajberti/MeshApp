@@ -3,6 +3,7 @@ use thiserror::Error;
 
 mod identity;
 mod message;
+mod session;
 
 #[cfg(test)]
 mod vectors;
@@ -13,6 +14,10 @@ pub use identity::{
 pub use message::{
     open_local, open_message, seal_local, seal_message, seal_message_with, SealedMessage,
     MESSAGE_KDF_INFO, MESSAGE_KDF_SALT,
+};
+pub use session::{
+    derive_session_keys, handshake_transcript, open_session, seal_session, session_nonce,
+    EphemeralSecret, SessionKeys, SESSION_KDF_INFO_HI_LO, SESSION_KDF_INFO_LO_HI, SESSION_KDF_SALT,
 };
 
 #[derive(Debug, Error, PartialEq, Eq)]

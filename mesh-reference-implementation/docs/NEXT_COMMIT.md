@@ -1,8 +1,5 @@
-# Next Commit: Mesh session HELLO and encrypted frames
+# Next Commit: Nearby transport adapter
 
-1. Add the `0x4D50` binary frame header and frame types.
-2. Implement HELLO, version negotiation, ephemeral X25519 link keys and SESSION_OK.
-3. Protect subsequent frames with ChaCha20-Poly1305 session keys and counters.
-4. Exchange an explicit Bundle ID inventory (no Bloom filters).
-5. Transfer a `send_text` Bundle across two in-process `MeshCore` sessions.
-6. Keep Nearby Connections and native apps until that session test passes.
+1. Keep the in-process Mesh Session tests green.
+2. Add a native/Nearby adapter that maps radio events onto `CoreEvent` / `CoreAction`.
+3. Do not start Android or iOS UI work until a device-to-device session transfers a Bundle.

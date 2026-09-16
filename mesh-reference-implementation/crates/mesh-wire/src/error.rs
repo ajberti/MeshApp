@@ -38,4 +38,14 @@ pub enum WireError {
     InvalidUtf8,
     #[error("sealed payload field has the wrong length")]
     InvalidSealedPayload,
+    #[error("invalid mesh frame magic")]
+    InvalidMagic,
+    #[error("mesh frame is truncated")]
+    TruncatedFrame,
+    #[error("mesh frame exceeds size limit")]
+    FrameTooLarge,
+    #[error("unknown frame type {0}")]
+    UnknownFrameType(u8),
+    #[error("invalid control payload")]
+    InvalidControlPayload,
 }
