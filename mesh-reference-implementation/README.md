@@ -16,7 +16,7 @@ This workspace implements:
 - controlled-epidemic routing decisions;
 - an event/action `MeshCore` shell with identity, contacts and `send_text()`;
 - Mesh Session frames (`0x4D50`), link keys, inventory and in-process Bundle transfer;
-- a thin UniFFI-ready bindings crate.
+- a UniFFI `MeshEngine` for native code (`open`, `process_event`, `send_text`, `add_contact`, read messages).
 
 `MeshCore::send_text()` composes, encrypts, signs and stores a Bundle. Two in-process cores can then open a Mesh Session (`HELLO` → `KEY_INIT`/`KEY_REPLY` → `SESSION_OK`), exchange an explicit Bundle ID inventory, and transfer the Bundle over ChaCha20-Poly1305 frames.
 
@@ -24,9 +24,8 @@ This workspace implements:
 
 See [docs/NEXT_COMMIT.md](docs/NEXT_COMMIT.md). Short version:
 
-1. UniFFI on `mesh-bindings` (`open`, `process_event`, `send_text`, `add_contact`, read messages). IDs as bytes; no SQLite or crypto through FFI.
-2. Thin Nearby adapter on Android first: radio callbacks → `CoreEvent`, `CoreAction` → Nearby. No messenger UI.
-3. Prove a device-to-device Bundle transfer, then iOS. Compose/SwiftUI wait until that works.
+1. Thin Nearby adapter on Android first: radio callbacks → `MeshEvent`, `MeshAction` → Nearby. No messenger UI.
+2. Prove a device-to-device Bundle transfer, then iOS. Compose/SwiftUI wait until that works.
 
 ## Build
 

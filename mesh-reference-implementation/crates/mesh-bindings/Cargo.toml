@@ -5,8 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib", "staticlib", "rlib"]
+name = "mesh_bindings"
+crate-type = ["cdylib", "staticlib", "lib"]
 
 [dependencies]
 mesh-core = { path = "../mesh-core" }
+mesh-crypto = { path = "../mesh-crypto" }
+mesh-types = { path = "../mesh-types" }
+rand_core.workspace = true
+thiserror.workspace = true
 uniffi.workspace = true
+zeroize.workspace = true

@@ -411,6 +411,51 @@ impl MeshStore {
         }
         Ok(result)
     }
+
+    pub fn list_contacts(&self) -> Result<Vec<StoredContact>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT user_id, display_name, signing_public_key, encryption_public_key, \
+                    trust_state, fingerprint, created_at_ms \
+             FROM contacts ORDER BY display_name ASC, created_at_ms ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(StoredContact {
+                user_id: UserId::from_bytes(id16(row.get(0)?)?),
+                display_name: row.get(1)?,
+                signing_public: blob32(row.get(2)?)?,
+                encryption_public: blob32(row.get(3)?)?,
+                trust_state: trust_state(row.get(4)?)?,
+                fingerprint: row.get(5)?,
+                created_at_ms: row.get(6)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    pub fn list_conversations(&self) -> Result<Vec<StoredConversation>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT conversation_id, remote_user_id, created_at_ms, last_message_at_ms \
+             FROM conversations \
+             ORDER BY last_message_at_ms IS NULL, last_message_at_ms DESC, created_at_ms DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(StoredConversation {
+                conversation_id: ConversationId::from_bytes(id16(row.get(0)?)?),
+                remote_user_id: UserId::from_bytes(id16(row.get(1)?)?),
+                created_at_ms: row.get(2)?,
+                last_message_at_ms: row.get(3)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
 }
 
 fn id16(bytes: Vec<u8>) -> Result<[u8; 16], rusqlite::Error> {
@@ -464,6 +509,14 @@ pub struct StoredContact {
     pub trust_state: TrustState,
     pub fingerprint: String,
     pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct StoredConversation {
+    pub conversation_id: ConversationId,
+    pub remote_user_id: UserId,
+    pub created_at_ms: i64,
+    pub last_message_at_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -580,5 +633,6 @@ mod tests {
         let loaded = store.get_contact(contact.user_id).unwrap().unwrap();
         assert_eq!(loaded.display_name, "Bob");
         assert_eq!(loaded.signing_public, [1; 32]);
+        assert_eq!(store.list_contacts().unwrap().len(), 1);
     }
 }

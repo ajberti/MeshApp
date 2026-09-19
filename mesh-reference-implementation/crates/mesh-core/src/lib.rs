@@ -228,6 +228,23 @@ pub struct PlaintextMessage {
     pub text: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversationSummary {
+    pub conversation_id: ConversationId,
+    pub remote_user_id: UserId,
+    pub created_at_ms: i64,
+    pub last_message_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContactInfo {
+    pub user_id: UserId,
+    pub display_name: String,
+    pub signing_public: [u8; 32],
+    pub encryption_public: [u8; 32],
+    pub fingerprint: String,
+}
+
 pub struct MeshCore {
     identity: Identity,
     local_data_key: [u8; 32],
@@ -373,6 +390,35 @@ impl MeshCore {
             });
         }
         Ok(messages)
+    }
+
+    pub fn conversations(&self) -> Result<Vec<ConversationSummary>, CoreError> {
+        Ok(self
+            .store
+            .list_conversations()?
+            .into_iter()
+            .map(|row| ConversationSummary {
+                conversation_id: row.conversation_id,
+                remote_user_id: row.remote_user_id,
+                created_at_ms: row.created_at_ms,
+                last_message_at_ms: row.last_message_at_ms,
+            })
+            .collect())
+    }
+
+    pub fn contacts(&self) -> Result<Vec<ContactInfo>, CoreError> {
+        Ok(self
+            .store
+            .list_contacts()?
+            .into_iter()
+            .map(|row| ContactInfo {
+                user_id: row.user_id,
+                display_name: row.display_name,
+                signing_public: row.signing_public,
+                encryption_public: row.encryption_public,
+                fingerprint: row.fingerprint,
+            })
+            .collect())
     }
 
     pub fn process_event(&mut self, event: CoreEvent) -> Result<Vec<CoreAction>, CoreError> {

@@ -554,7 +554,12 @@ name = "mesh-bindings"
 version = "0.1.0"
 dependencies = [
  "mesh-core",
+ "mesh-crypto",
+ "mesh-types",
+ "rand_core",
+ "thiserror",
  "uniffi",
+ "zeroize",
 ]
 
 [[package]]
