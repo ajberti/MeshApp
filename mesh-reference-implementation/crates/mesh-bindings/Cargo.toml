@@ -16,3 +16,12 @@ rand_core.workspace = true
 thiserror.workspace = true
 uniffi.workspace = true
 zeroize.workspace = true
+
+[features]
+cli = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+

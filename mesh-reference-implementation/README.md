@@ -24,8 +24,8 @@ This workspace implements:
 
 See [docs/NEXT_COMMIT.md](docs/NEXT_COMMIT.md). Short version:
 
-1. Thin Nearby adapter on Android first: radio callbacks → `MeshEvent`, `MeshAction` → Nearby. No messenger UI.
-2. Prove a device-to-device Bundle transfer, then iOS. Compose/SwiftUI wait until that works.
+1. Open `ios/MeshApp.xcodeproj`, set a Development Team, run two simulators or two iPhones.
+2. Prove a `send_text` Bundle transfer over Network.framework. Android/Nearby waits until that works.
 
 ## Build
 
@@ -39,7 +39,7 @@ cargo test --workspace
 
 ## Architecture
 
-Native Android/iOS code owns radios, permissions, secure OS storage and UI. Rust owns protocol state, routing, bundle persistence and cryptography.
+Native Android/iOS code owns radios, permissions, secure OS storage and UI. Rust owns protocol state, routing, bundle persistence and cryptography. The first native shell is iOS (`ios/MeshApp`) using Network.framework; Nearby Connections comes later for Android interop.
 
 ```text
 Native UI / transport

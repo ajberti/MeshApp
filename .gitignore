@@ -6,3 +6,6 @@
 .vscode/
 *.zip
 target/
+ios/build/
+ios/**/xcuserdata/
+*.xcuserstate

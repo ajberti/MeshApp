@@ -132,6 +132,10 @@ impl MeshSession {
         limit.saturating_sub(64).max(1024)
     }
 
+    pub fn is_secure(&self) -> bool {
+        self.phase == Phase::Secure
+    }
+
     pub fn append_data(&mut self, data: &BundleData) -> Result<Option<Vec<u8>>, CoreError> {
         let buf = self.incoming.entry(data.bundle_id).or_default();
         if data.offset as usize != buf.len() {

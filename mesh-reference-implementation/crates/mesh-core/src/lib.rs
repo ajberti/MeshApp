@@ -357,7 +357,17 @@ impl MeshCore {
         recipient: UserId,
         text: impl Into<String>,
     ) -> Result<Vec<CoreAction>, CoreError> {
-        self.compose_text(recipient, text.into())
+        let mut actions = self.compose_text(recipient, text.into())?;
+        let live_links: Vec<_> = self
+            .links
+            .iter()
+            .filter(|(_, session)| session.is_secure())
+            .map(|(link_id, _)| *link_id)
+            .collect();
+        for link_id in live_links {
+            actions.extend(self.send_offers(link_id)?);
+        }
+        Ok(actions)
     }
 
     pub fn accept_bundle(&mut self, bundle: &WireBundle) -> Result<Vec<CoreAction>, CoreError> {

@@ -47,6 +47,10 @@ AEAD   = ChaCha20-Poly1305
 
 `mesh-bindings` exposes a UniFFI `MeshEngine`. Native calls `generate_identity`, stores the seeds in Keystore/Keychain, then `open` / `process_event` / `send_text` / `add_contact` / `get_conversations` / `get_messages`. Identifiers cross FFI as byte arrays. SQLite, wire frames and crypto stay inside Rust.
 
+## Milestone 6
+
+iOS comes first (no Android hardware in this workflow). `ios/MeshApp` is a debug shell: Keychain identity, UniFFI `MeshEngine`, and a Network.framework Bonjour/TCP transport with length-prefixed frames. Nearby Connections stays the later cross-platform radio. SwiftUI here is diagnostic only.
+
 ## Critical invariants
 
 1. Bundle IDs and message IDs are distinct types.

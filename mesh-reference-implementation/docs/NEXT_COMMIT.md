@@ -1,9 +1,8 @@
-# Next Commit: Nearby on Android
+# Next Commit: prove iOS Bundle transfer
 
-UniFFI `MeshEngine` is in place. Native code still has no Android or iOS project. Radios stay in native code; protocol stays in Rust. Nearby Connections is a replaceable `MeshTransport` and must not leak into routing or crypto.
+The iOS debug shell (`ios/MeshApp`) loads UniFFI `MeshEngine`, stores identity seeds in Keychain, and uses Network.framework Bonjour `_mesh._tcp` plus length-prefixed TCP as a replaceable `MeshTransport`. There is no messenger UI. Google Nearby Connections waits until Android exists.
 
 1. Keep the in-process Mesh Session and `mesh-bindings` tests green.
-2. Add a thin Nearby adapter on Android first. Map radio callbacks to `MeshEvent` (`PeerDiscovered`, `LinkOpened`, `BytesReceived`, `LinkClosed`) and execute `MeshAction` (`Connect`, `SendBytes`, `CloseLink`).
-3. Persist `generate_identity()` seeds in Android Keystore and pass them to `MeshEngine::open`.
-4. Prove a device-to-device Bundle transfer over Nearby (same path as the in-process session test). Then add iOS.
-5. Do not start Jetpack Compose or SwiftUI messaging until two devices complete `HELLO` → session keys → inventory → `send_text` delivery.
+2. Open `ios/MeshApp.xcodeproj`, set a Development Team, run two simulators or two iPhones.
+3. Confirm a `send_text` Bundle transfers over the Network.framework adapter.
+4. Android/Nearby and Compose/SwiftUI messaging wait until that works.
