@@ -3,6 +3,7 @@ import SwiftUI
 import UIKit
 
 final class MeshRuntime: ObservableObject {
+    @Published var username = ""
     @Published var fingerprint = ""
     @Published var discoveryIdHex = ""
     @Published var contactCard = ""
@@ -21,6 +22,8 @@ final class MeshRuntime: ObservableObject {
     private let transport = NetworkMeshTransport()
     private let work = DispatchQueue(label: "mesh.runtime")
     private var localSigningPublic = Data()
+    private var localIdentity: MeshPublicIdentity?
+    private static let usernameKey = "mesh.displayName"
 
     init() throws {
         let secrets: MeshIdentitySecrets
@@ -52,8 +55,9 @@ final class MeshRuntime: ObservableObject {
         fingerprint = identity.fingerprint
         discoveryIdHex = status.discoveryId.hexString
         localSigningPublic = identity.signingPublic
-        contactCard = MeshContactCard(identity: identity).encoded
-        qrImage = ContactQRCode.image(from: contactCard)
+        localIdentity = identity
+        username = UserDefaults.standard.string(forKey: Self.usernameKey) ?? ""
+        refreshContactCard()
         append("local \(identity.fingerprint.prefix(16))…")
 
         transport.onLog = { [weak self] line in
@@ -69,6 +73,44 @@ final class MeshRuntime: ObservableObject {
         }
         transport.start(discoveryId: status.discoveryId)
         refreshInbox()
+    }
+
+    var needsUsername: Bool {
+        username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func setUsername(_ raw: String) -> Bool {
+        guard let name = Self.sanitizeUsername(raw) else {
+            errorText = "Choose a name between 1 and 24 characters."
+            return false
+        }
+        errorText = nil
+        username = name
+        UserDefaults.standard.set(name, forKey: Self.usernameKey)
+        refreshContactCard()
+        append("username \(name)")
+        return true
+    }
+
+    static func sanitizeUsername(_ raw: String) -> String? {
+        let name = raw
+            .replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...24).contains(name.count) else {
+            return nil
+        }
+        return name
+    }
+
+    private func refreshContactCard() {
+        guard let identity = localIdentity else { return }
+        let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        contactCard = MeshContactCard(
+            identity: identity,
+            displayName: name.isEmpty ? nil : name
+        ).encoded
+        qrImage = ContactQRCode.image(from: contactCard)
     }
 
     func copyContactCard() {
@@ -90,7 +132,7 @@ final class MeshRuntime: ObservableObject {
             errorText = "That is this device's identity."
             return
         }
-        let name = card.displayName ?? String(card.signingPublic.hexString.prefix(12))
+        let name = card.displayName ?? "Unknown"
         work.async { [weak self] in
             guard let self else { return }
             do {

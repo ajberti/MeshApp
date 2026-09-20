@@ -2,7 +2,7 @@
 
 Loads `MeshEngine` over UniFFI and uses Apple's Network framework (Bonjour `_mesh._tcp` + peer-to-peer TCP) as the first radio. This is a replaceable `MeshTransport`, not part of Mesh Protocol. Google Nearby Connections is deferred until Android exists.
 
-The main UI is a conversation list. Add a contact with a `mesh:1` QR or paste (both people must add each other). Bonjour peers, engine logs and the raw contact card are under **Advanced**.
+The main UI is a conversation list using chosen usernames. Add a contact with a `mesh:1` QR or paste (both people must add each other). Fingerprints, Bonjour peers and engine logs are under **Advanced**.
 
 ## Open
 

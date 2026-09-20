@@ -59,17 +59,6 @@ struct ConversationView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle(contact.title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                VStack(spacing: 2) {
-                    Text(contact.title)
-                        .font(.headline)
-                    Text(contact.fingerprint.meshShortFingerprint)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
     }
 
     private func scrollToLatest(_ proxy: ScrollViewProxy) {

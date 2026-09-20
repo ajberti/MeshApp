@@ -18,9 +18,6 @@ struct ConversationsView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(contact.title)
                                     .font(.headline)
-                                Text(contact.fingerprint.meshShortFingerprint)
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
                                 Text(runtime.preview(for: contact))
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
@@ -55,6 +52,12 @@ struct ConversationsView: View {
                 NavigationStack {
                     AddContactView()
                 }
+            }
+            .sheet(isPresented: Binding(
+                get: { runtime.needsUsername },
+                set: { _ in }
+            )) {
+                UsernameSetupView()
             }
         }
     }

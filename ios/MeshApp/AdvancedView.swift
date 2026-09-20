@@ -6,6 +6,9 @@ struct AdvancedView: View {
     var body: some View {
         List {
             Section("This device") {
+                LabeledContent("Username") {
+                    Text(runtime.username.isEmpty ? "Not set" : runtime.username)
+                }
                 LabeledContent("Fingerprint") {
                     Text(runtime.fingerprint)
                         .font(.caption.monospaced())

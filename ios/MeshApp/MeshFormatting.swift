@@ -19,10 +19,11 @@ extension String {
 extension MeshContact {
     var title: String {
         let generated = String(signingPublic.hexString.prefix(12))
-        if displayName.isEmpty || displayName == generated {
-            return fingerprint.meshShortFingerprint
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == generated {
+            return "Unknown"
         }
-        return displayName
+        return trimmed
     }
 }
 

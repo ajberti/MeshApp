@@ -3,15 +3,24 @@ import SwiftUI
 struct AddContactView: View {
     @EnvironmentObject private var runtime: MeshRuntime
     @Environment(\.dismiss) private var dismiss
+    @State private var usernameDraft = ""
 
     var body: some View {
         List {
+            Section("Your name") {
+                TextField("Username", text: $usernameDraft)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                    .onSubmit {
+                        saveUsername()
+                    }
+                if !runtime.username.isEmpty {
+                    Text("People you share with will see “\(runtime.username)”.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Section {
-                Text("Your code")
-                    .font(.headline)
-                Text(runtime.fingerprint.meshShortFingerprint)
-                    .font(.title3.monospaced())
-                    .frame(maxWidth: .infinity)
                 if let qrImage = runtime.qrImage {
                     Image(uiImage: qrImage)
                         .interpolation(.none)
@@ -25,12 +34,14 @@ struct AddContactView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Button("Copy contact card") {
+                    saveUsername()
                     runtime.copyContactCard()
                 }
             }
             Section("Add someone") {
                 if ContactScannerSheet.isAvailable {
                     Button("Scan their QR code") {
+                        saveUsername()
                         runtime.showScanner = true
                     }
                 } else {
@@ -55,12 +66,7 @@ struct AddContactView: View {
             if !runtime.contacts.isEmpty {
                 Section("Contacts") {
                     ForEach(runtime.contacts, id: \.userId) { contact in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(contact.title)
-                            Text(contact.fingerprint.meshShortFingerprint)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                        }
+                        Text(contact.title)
                     }
                 }
             }
@@ -69,8 +75,14 @@ struct AddContactView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("Done") { dismiss() }
+                Button("Done") {
+                    saveUsername()
+                    dismiss()
+                }
             }
+        }
+        .onAppear {
+            usernameDraft = runtime.username
         }
         .onChange(of: runtime.contacts.count) { oldCount, newCount in
             if newCount > oldCount {
@@ -82,5 +94,11 @@ struct AddContactView: View {
                 runtime.importContactCard(payload)
             }
         }
+    }
+
+    private func saveUsername() {
+        let trimmed = usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != runtime.username else { return }
+        _ = runtime.setUsername(trimmed)
     }
 }

@@ -35,20 +35,23 @@ struct MeshContactCard: Equatable {
     }
 
     init?(blob: String) {
-        let tokens = blob.split { $0.isWhitespace }.map(String.init)
-        guard tokens.contains(where: { $0 == Self.versionToken || $0.hasPrefix("\(Self.versionToken):") }) else {
+        let lines = blob
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard lines.contains(where: { $0 == Self.versionToken || $0.hasPrefix("\(Self.versionToken)") }) else {
             return nil
         }
         var signing: Data?
         var encryption: Data?
         var name: String?
-        for token in tokens {
-            if token.hasPrefix("s:") {
-                signing = Data(hex: String(token.dropFirst(2)))
-            } else if token.hasPrefix("e:") {
-                encryption = Data(hex: String(token.dropFirst(2)))
-            } else if token.hasPrefix("n:") {
-                let value = String(token.dropFirst(2))
+        for line in lines {
+            if line.hasPrefix("s:") {
+                signing = Data(hex: String(line.dropFirst(2)))
+            } else if line.hasPrefix("e:") {
+                encryption = Data(hex: String(line.dropFirst(2)))
+            } else if line.hasPrefix("n:") {
+                let value = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
                 if !value.isEmpty {
                     name = value
                 }
