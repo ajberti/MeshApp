@@ -10,7 +10,7 @@ This is a diagnostic shell, not the messenger UI. The debug advertisement includ
 open ios/MeshApp.xcodeproj
 ```
 
-In Xcode, select a Development Team, then run on two simulators or two iPhones. Allow Local Network when prompted. Each instance should list the other under Peers; **Send to first contact** should show the plaintext on the other device.
+In Xcode, select a Development Team, then run on two simulators or two iPhones. Allow Local Network when prompted. Each instance should list the other under Peers; **Send to first contact** should show the plaintext on the other device. Two simulators have already completed that path.
 
 The Run Script phase builds `libmesh_bindings.a` and regenerates Swift in `MeshApp/Generated`. Xcode's script PATH does not include Cargo, so `ios/scripts/build-rust.sh` sources `~/.cargo/env`.
 

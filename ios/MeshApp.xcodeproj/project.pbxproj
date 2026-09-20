@@ -6,13 +6,15 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXFileReference section */
+		A10000000000000000000007 /* MeshApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MeshApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		A10000000000000000000010 /* Exceptions */ = {
+		A10000000000000000000010 /* Exceptions for "MeshApp" folder in "MeshApp" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				Generated/meshFFI.h,
-				Generated/meshFFI.modulemap,
 			);
 			target = A10000000000000000000002 /* MeshApp */;
 		};
@@ -22,7 +24,7 @@
 		A10000000000000000000003 /* MeshApp */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				A10000000000000000000010 /* Exceptions */,
+				A10000000000000000000010 /* Exceptions for "MeshApp" folder in "MeshApp" target */,
 			);
 			path = MeshApp;
 			sourceTree = "<group>";
@@ -38,6 +40,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A10000000000000000000009 = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000003 /* MeshApp */,
+				A1000000000000000000000A /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A1000000000000000000000A /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000007 /* MeshApp.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
 		A10000000000000000000002 /* MeshApp */ = {
@@ -89,35 +110,6 @@
 			);
 		};
 /* End PBXProject section */
-
-/* Begin PBXGroup section */
-		A10000000000000000000009 = {
-			isa = PBXGroup;
-			children = (
-				A10000000000000000000003 /* MeshApp */,
-				A1000000000000000000000A /* Products */,
-			);
-			sourceTree = "<group>";
-		};
-		A1000000000000000000000A /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				A10000000000000000000007 /* MeshApp.app */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-/* End PBXGroup section */
-
-/* Begin PBXFileReference section */
-		A10000000000000000000007 /* MeshApp.app */ = {
-			isa = PBXFileReference;
-			explicitFileType = wrapper.application;
-			includeInIndex = 0;
-			path = MeshApp.app;
-			sourceTree = BUILT_PRODUCTS_DIR;
-		};
-/* End PBXFileReference section */
 
 /* Begin PBXResourcesBuildPhase section */
 		A10000000000000000000006 /* Resources */ = {
@@ -206,7 +198,7 @@
 				CODE_SIGN_ENTITLEMENTS = MeshApp/MeshApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = MVF7R7F96B;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/MeshApp/Generated";
@@ -246,7 +238,7 @@
 				CODE_SIGN_ENTITLEMENTS = MeshApp/MeshApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = MVF7R7F96B;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/MeshApp/Generated";
