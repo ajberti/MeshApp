@@ -16,7 +16,7 @@ struct MeshIosApp: App {
 
     var body: some Scene {
         WindowGroup {
-            DebugRootView()
+            ConversationsView()
                 .environmentObject(runtime)
         }
     }

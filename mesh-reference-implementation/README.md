@@ -17,7 +17,7 @@ This workspace implements:
 - an event/action `MeshCore` shell with identity, contacts and `send_text()`;
 - Mesh Session frames (`0x4D50`), link keys, inventory and in-process Bundle transfer;
 - a UniFFI `MeshEngine` for native code (`open`, `process_event`, `send_text`, `add_contact`, read messages);
-- an iOS debug shell (`ios/MeshApp`) with Keychain identity and Network.framework Bonjour/TCP as the first `MeshTransport`.
+- an iOS app (`ios/MeshApp`) with conversation UI, Keychain identity, and Network.framework Bonjour/TCP as the first `MeshTransport`.
 
 `MeshCore::send_text()` composes, encrypts, signs and stores a Bundle. Two in-process cores can then open a Mesh Session (`HELLO` → `KEY_INIT`/`KEY_REPLY` → `SESSION_OK`), exchange an explicit Bundle ID inventory, and transfer the Bundle over ChaCha20-Poly1305 frames. Two iOS simulators have done the same over Network.framework.
 
@@ -25,8 +25,8 @@ This workspace implements:
 
 See [docs/NEXT_COMMIT.md](docs/NEXT_COMMIT.md). Short version:
 
-1. Optional: same transfer on two physical iPhones.
-2. Stop advertising public keys in Bonjour TXT; add QR/paste `add_contact`. Android/Nearby still waits.
+1. Confirm the conversation UI on two simulators (paste) or iPhones (QR).
+2. Android/Nearby still waits.
 
 ## Build
 

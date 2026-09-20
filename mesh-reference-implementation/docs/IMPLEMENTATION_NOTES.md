@@ -49,7 +49,7 @@ AEAD   = ChaCha20-Poly1305
 
 ## Milestone 6
 
-iOS comes first (no Android hardware in this workflow). `ios/MeshApp` is a debug shell: Keychain identity, UniFFI `MeshEngine`, and a Network.framework Bonjour/TCP transport with length-prefixed frames. Two simulators have completed a `send_text` Bundle transfer on that path. Nearby Connections stays the later cross-platform radio. SwiftUI here is diagnostic only; Bonjour TXT still carries public keys for debug `add_contact`.
+iOS comes first (no Android hardware in this workflow). `ios/MeshApp` has a conversation list and thread on UniFFI `MeshEngine`, Keychain identity, and Network.framework Bonjour/TCP. Contacts are `mesh:1` paste/QR cards. Diagnostics (peers, logs, raw identity) are behind Advanced. Nearby Connections stays the later cross-platform radio.
 
 ## Critical invariants
 

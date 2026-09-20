@@ -26,6 +26,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Mesh exchanges queued messages with nearby devices without the Internet.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Mesh scans a contact QR code to add a trusted identity. No photos are stored.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

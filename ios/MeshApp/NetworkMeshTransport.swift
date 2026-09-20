@@ -9,9 +9,6 @@ final class NetworkMeshTransport {
         var token: Data
         var endpoint: NWEndpoint
         var discoveryId: Data
-        var signingPublic: Data?
-        var encryptionPublic: Data?
-        var userId: Data?
         var displayName: String
     }
 
@@ -28,9 +25,9 @@ final class NetworkMeshTransport {
     private var nextLinkId: UInt64 = 1
     private let instanceName = UUID().uuidString
 
-    func start(discoveryId: Data, identity: MeshPublicIdentity) {
+    func start(discoveryId: Data) {
         queue.async { [weak self] in
-            self?.startLocked(discoveryId: discoveryId, identity: identity)
+            self?.startLocked(discoveryId: discoveryId)
         }
     }
 
@@ -70,13 +67,10 @@ final class NetworkMeshTransport {
         }
     }
 
-    private func startLocked(discoveryId: Data, identity: MeshPublicIdentity) {
+    private func startLocked(discoveryId: Data) {
+        // Discovery ID only. Identity keys move through explicit contact exchange.
         let txt = NWTXTRecord([
             "d": discoveryId.hexString,
-            "s": identity.signingPublic.hexString,
-            "e": identity.encryptionPublic.hexString,
-            "u": identity.userId.hexString,
-            "n": String(identity.fingerprint.prefix(12)),
         ])
 
         let parameters = Self.peerParameters()
@@ -127,27 +121,17 @@ final class NetworkMeshTransport {
             current.insert(token)
             endpoints[token] = result.endpoint
             var discoveryId = Data()
-            var signingPublic: Data?
-            var encryptionPublic: Data?
-            var userId: Data?
-            var displayName = name
             if case let .bonjour(txt) = result.metadata {
                 discoveryId = Data(hex: Self.txtString(txt, "d") ?? "") ?? Data()
-                signingPublic = Data(hex: Self.txtString(txt, "s") ?? "")
-                encryptionPublic = Data(hex: Self.txtString(txt, "e") ?? "")
-                userId = Data(hex: Self.txtString(txt, "u") ?? "")
-                if let nameHint = Self.txtString(txt, "n"), !nameHint.isEmpty {
-                    displayName = nameHint
-                }
             }
+            let displayName = discoveryId.isEmpty
+                ? name
+                : String(discoveryId.hexString.prefix(12))
             onPeer?(
                 Peer(
                     token: token,
                     endpoint: result.endpoint,
                     discoveryId: discoveryId,
-                    signingPublic: signingPublic,
-                    encryptionPublic: encryptionPublic,
-                    userId: userId,
                     displayName: displayName
                 )
             )
