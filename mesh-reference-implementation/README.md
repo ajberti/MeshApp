@@ -25,7 +25,7 @@ This workspace implements:
 
 See [docs/NEXT_COMMIT.md](docs/NEXT_COMMIT.md). Short version:
 
-1. Confirm the conversation UI on two simulators (paste) or iPhones (QR).
+1. Prove A → C → B on three simulators (C is not a contact).
 2. Android/Nearby still waits.
 
 ## Build

@@ -53,8 +53,13 @@ pub struct MeshSession {
     max_frame: usize,
     user_id: Option<UserId>,
     known_bundle_ids: HashSet<BundleId>,
-    pending_offers: HashMap<BundleId, u32>,
+    pending_offers: HashMap<BundleId, BundleOffer>,
+    requested: HashSet<BundleId>,
     incoming: HashMap<BundleId, Vec<u8>>,
+    outbound_offer_count: u32,
+    outbound_offer_bytes: u64,
+    foreign_request_count: u32,
+    foreign_request_bytes: u64,
 }
 
 impl MeshSession {
@@ -94,7 +99,12 @@ impl MeshSession {
             user_id: None,
             known_bundle_ids: HashSet::new(),
             pending_offers: HashMap::new(),
+            requested: HashSet::new(),
             incoming: HashMap::new(),
+            outbound_offer_count: 0,
+            outbound_offer_bytes: 0,
+            foreign_request_count: 0,
+            foreign_request_bytes: 0,
         };
         (session, frame)
     }
@@ -124,7 +134,45 @@ impl MeshSession {
     }
 
     pub fn note_offer(&mut self, offer: &BundleOffer) {
-        self.pending_offers.insert(offer.bundle_id, offer.size);
+        self.pending_offers
+            .entry(offer.bundle_id)
+            .or_insert_with(|| offer.clone());
+    }
+
+    pub fn unrequested_offers(&self) -> Vec<BundleOffer> {
+        self.pending_offers
+            .values()
+            .filter(|offer| !self.requested.contains(&offer.bundle_id))
+            .cloned()
+            .collect()
+    }
+
+    pub fn mark_requested(&mut self, bundle_id: BundleId, foreign: bool, size: u32) {
+        if self.requested.insert(bundle_id) && foreign {
+            self.foreign_request_count = self.foreign_request_count.saturating_add(1);
+            self.foreign_request_bytes = self.foreign_request_bytes.saturating_add(u64::from(size));
+        }
+    }
+
+    pub fn foreign_request_count(&self) -> u32 {
+        self.foreign_request_count
+    }
+
+    pub fn foreign_request_bytes(&self) -> u64 {
+        self.foreign_request_bytes
+    }
+
+    pub fn record_outbound_offer(&mut self, size: u32) {
+        self.outbound_offer_count = self.outbound_offer_count.saturating_add(1);
+        self.outbound_offer_bytes = self.outbound_offer_bytes.saturating_add(u64::from(size));
+    }
+
+    pub fn outbound_offer_count(&self) -> u32 {
+        self.outbound_offer_count
+    }
+
+    pub fn outbound_offer_bytes(&self) -> u64 {
+        self.outbound_offer_bytes
     }
 
     pub fn plaintext_chunk_size(&self) -> usize {
@@ -145,8 +193,7 @@ impl MeshSession {
         let ready = self
             .pending_offers
             .get(&data.bundle_id)
-            .copied()
-            .is_some_and(|size| buf.len() as u32 >= size);
+            .is_some_and(|offer| buf.len() as u32 >= offer.size);
         if ready {
             let complete = self.incoming.remove(&data.bundle_id).unwrap();
             self.pending_offers.remove(&data.bundle_id);

@@ -1,7 +1,7 @@
-# Next Commit: iPhone confirmation, then Android
+# Next Commit: three-device iOS relay
 
-iOS now has a conversation list and thread. QR/paste contact exchange lives under Add contact. Bonjour peers, engine logs and raw identity stay behind **Advanced**.
+Bounded stranger relay is in `MeshCore`: destination offers are requested first; foreign copies are capped per encounter and against the 250 MB relay quota. Senders also cap offers/bytes per session.
 
-1. Keep the in-process Mesh Session and `mesh-bindings` tests green.
-2. Confirm the new UI on two simulators (paste) and optionally two iPhones (QR).
-3. Android/Nearby still waits.
+1. Keep Mesh Session, stranger-cap, and `mesh-bindings` tests green.
+2. Prove A → C → B on three simulators (C has neither contact; B's app is quit while A meets C).
+3. Android/Nearby and location-based routing still wait.

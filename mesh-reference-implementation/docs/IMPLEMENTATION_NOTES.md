@@ -51,6 +51,10 @@ AEAD   = ChaCha20-Poly1305
 
 iOS comes first (no Android hardware in this workflow). `ios/MeshApp` has a conversation list and thread on UniFFI `MeshEngine`, Keychain identity, and Network.framework Bonjour/TCP. Contacts are `mesh:1` paste/QR cards. Diagnostics (peers, logs, raw identity) are behind Advanced. Nearby Connections stays the later cross-platform radio.
 
+## Milestone 7
+
+Stranger-to-stranger relay is bounded. A node always requests Bundles destined to itself. Foreign copies are limited per encounter (count and bytes) and must fit in the 250 MB relay quota. Outbound offers on a session are similarly capped. Relays still never obtain DIRECT_MESSAGE plaintext.
+
 ## Critical invariants
 
 1. Bundle IDs and message IDs are distinct types.

@@ -176,6 +176,15 @@ impl MeshStore {
         Ok(())
     }
 
+    pub fn relay_store_bytes(&self, local_user: UserId) -> Result<u64, StoreError> {
+        let total: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(length(encoded_bundle)), 0) FROM bundles WHERE destination_id != ?1",
+            params![local_user.as_bytes().as_slice()],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(total).unwrap_or(0))
+    }
+
     pub fn create_tombstone(
         &mut self,
         bundle_id: BundleId,

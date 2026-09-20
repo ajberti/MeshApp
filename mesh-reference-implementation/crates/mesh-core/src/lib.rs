@@ -30,6 +30,10 @@ pub struct MeshConfig {
     pub normal_replication_limit: u32,
     pub high_replication_limit: u32,
     pub emergency_replication_limit: u32,
+    pub max_offers_per_encounter: u32,
+    pub max_offer_bytes_per_encounter: u64,
+    pub max_foreign_bundles_per_encounter: u32,
+    pub max_foreign_bytes_per_encounter: u64,
 }
 
 impl Default for MeshConfig {
@@ -41,6 +45,10 @@ impl Default for MeshConfig {
             normal_replication_limit: 6,
             high_replication_limit: 12,
             emergency_replication_limit: 20,
+            max_offers_per_encounter: 16,
+            max_offer_bytes_per_encounter: 256 * 1024,
+            max_foreign_bundles_per_encounter: 8,
+            max_foreign_bytes_per_encounter: 128 * 1024,
         }
     }
 }
@@ -766,7 +774,7 @@ impl MeshCore {
             .ok_or(CoreError::UnknownLink(link_id))?
             .peer_context();
         let now = self.clock.now_ms();
-        let mut offers = Vec::new();
+        let mut scored = Vec::new();
         for stored in self.store.list_bundles()? {
             let decision = self.router.evaluate(
                 &stored.bundle,
@@ -775,23 +783,46 @@ impl MeshCore {
                 &peer,
                 now,
             );
-            if matches!(
+            if !matches!(
                 decision,
                 RoutingDecision::SendImmediately | RoutingDecision::Offer
             ) {
-                let encoded = stored.bundle.encode_cbor()?;
-                offers.push(BundleOffer {
-                    bundle_id: stored.bundle.immutable.bundle_id,
-                    bundle_type: stored.bundle.immutable.bundle_type,
-                    destination_id: stored.bundle.immutable.destination_id,
-                    size: encoded.len() as u32,
-                    priority: stored.bundle.immutable.priority,
-                    hop_count: stored.bundle.relay.hop_count,
-                });
+                continue;
             }
+            let encoded = stored.bundle.encode_cbor()?;
+            let offer = BundleOffer {
+                bundle_id: stored.bundle.immutable.bundle_id,
+                bundle_type: stored.bundle.immutable.bundle_type,
+                destination_id: stored.bundle.immutable.destination_id,
+                size: encoded.len() as u32,
+                priority: stored.bundle.immutable.priority,
+                hop_count: stored.bundle.relay.hop_count,
+            };
+            let rank = ControlledEpidemicRouter::transfer_rank(&stored.bundle, &peer);
+            scored.push((rank, stored.first_seen_at_ms, decision, offer));
         }
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
         let mut actions = Vec::new();
-        for offer in &offers {
+        for (_, _, decision, offer) in scored {
+            let session = self
+                .links
+                .get(&link_id)
+                .ok_or(CoreError::UnknownLink(link_id))?;
+            let dest = matches!(decision, RoutingDecision::SendImmediately);
+            let over_count = session.outbound_offer_count() >= self.config.max_offers_per_encounter;
+            let over_bytes = session
+                .outbound_offer_bytes()
+                .saturating_add(u64::from(offer.size))
+                > self.config.max_offer_bytes_per_encounter;
+            if !dest && (over_count || over_bytes) {
+                continue;
+            }
+            let session = self
+                .links
+                .get_mut(&link_id)
+                .ok_or(CoreError::UnknownLink(link_id))?;
+            session.record_outbound_offer(offer.size);
             actions.push(CoreAction::BundleReadyForPeer {
                 link_id,
                 bundle_id: offer.bundle_id,
@@ -814,15 +845,65 @@ impl MeshCore {
         if let Some(session) = self.links.get_mut(&link_id) {
             session.note_offer(&offer);
         }
-        let payload = BundleIdPayload {
-            bundle_id: offer.bundle_id,
+        self.flush_offer_requests(link_id)
+    }
+
+    fn flush_offer_requests(&mut self, link_id: LinkId) -> Result<Vec<CoreAction>, CoreError> {
+        let local = self.identity.user_id();
+        let session = self
+            .links
+            .get(&link_id)
+            .ok_or(CoreError::UnknownLink(link_id))?;
+        let mut pending = session.unrequested_offers();
+        pending.sort_by(|a, b| {
+            let a_mine = a.destination_id == local;
+            let b_mine = b.destination_id == local;
+            b_mine
+                .cmp(&a_mine)
+                .then_with(|| b.priority.cmp(&a.priority))
+        });
+
+        let relay_used = self.store.relay_store_bytes(local)?;
+        let mut quota_left = self.config.relay_quota_bytes.saturating_sub(relay_used);
+        let mut foreign_count = session.foreign_request_count();
+        let mut foreign_bytes = session.foreign_request_bytes();
+        let mut to_request = Vec::new();
+        let mut logs = Vec::new();
+
+        for offer in pending {
+            let for_me = offer.destination_id == local;
+            if !for_me {
+                if offer.hop_count >= self.config.default_hop_limit {
+                    continue;
+                }
+                let size = u64::from(offer.size);
+                if size > quota_left
+                    || foreign_count >= self.config.max_foreign_bundles_per_encounter
+                    || foreign_bytes.saturating_add(size)
+                        > self.config.max_foreign_bytes_per_encounter
+                {
+                    logs.push("RELAY_SKIP".into());
+                    continue;
+                }
+                quota_left = quota_left.saturating_sub(size);
+                foreign_count = foreign_count.saturating_add(1);
+                foreign_bytes = foreign_bytes.saturating_add(size);
+            }
+            to_request.push((offer.bundle_id, !for_me, offer.size));
         }
-        .encode();
-        Ok(vec![self.send_secure(
-            link_id,
-            FrameType::BundleRequest,
-            payload,
-        )?])
+
+        let mut actions = Vec::new();
+        for (bundle_id, foreign, size) in to_request {
+            if let Some(session) = self.links.get_mut(&link_id) {
+                session.mark_requested(bundle_id, foreign, size);
+            }
+            let payload = BundleIdPayload { bundle_id }.encode();
+            actions.push(self.send_secure(link_id, FrameType::BundleRequest, payload)?);
+        }
+        for code in logs {
+            actions.push(CoreAction::Log { code });
+        }
+        Ok(actions)
     }
 
     fn on_bundle_request(
@@ -990,8 +1071,12 @@ mod tests {
     }
 
     fn test_core(identity: Identity, rng_seed: u8) -> MeshCore {
+        test_core_with(identity, rng_seed, MeshConfig::default())
+    }
+
+    fn test_core_with(identity: Identity, rng_seed: u8, config: MeshConfig) -> MeshCore {
         MeshCore::open_in_memory(
-            MeshConfig::default(),
+            config,
             identity,
             seed(rng_seed.wrapping_add(50)),
             MeshClock::Fixed(1_700_000_000_000),
@@ -1250,5 +1335,164 @@ mod tests {
             .iter()
             .any(|action| matches!(action, CoreAction::MessageReceived { .. })));
         assert_eq!(bob.plaintext_messages().unwrap()[0].text, "Are you safe?");
+    }
+
+    #[test]
+    fn stranger_relay_caps_foreign_bundles_per_encounter() {
+        let alice_id = Identity::from_seeds(seed(0x00), seed(0x20));
+        let bob_id = Identity::from_seeds(seed(0x40), seed(0x60));
+        let charlie_id = Identity::from_seeds(seed(0xc0), seed(0xe0));
+        let mut alice = test_core(alice_id, 10);
+        let mut charlie = test_core_with(
+            charlie_id,
+            12,
+            MeshConfig {
+                max_foreign_bundles_per_encounter: 1,
+                ..MeshConfig::default()
+            },
+        );
+        alice.add_contact(bob_id.public_identity(), "Bob").unwrap();
+        alice.send_text(bob_id.user_id(), "one").unwrap();
+        alice.send_text(bob_id.user_id(), "two").unwrap();
+        alice.send_text(bob_id.user_id(), "three").unwrap();
+
+        let ac = LinkId(1);
+        let ca = LinkId(1);
+        let a_actions = alice
+            .process_event(CoreEvent::LinkOpened {
+                link_id: ac,
+                peer_token: b"charlie".to_vec(),
+            })
+            .unwrap();
+        let c_actions = charlie
+            .process_event(CoreEvent::LinkOpened {
+                link_id: ca,
+                peer_token: b"alice".to_vec(),
+            })
+            .unwrap();
+        pump_until_idle(&mut alice, &mut charlie, ac, ca, a_actions, c_actions);
+        assert_eq!(charlie.stored_bundles().unwrap().len(), 1);
+        assert!(charlie.plaintext_messages().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stranger_skips_foreign_when_relay_quota_full() {
+        let alice_id = Identity::from_seeds(seed(0x00), seed(0x20));
+        let bob_id = Identity::from_seeds(seed(0x40), seed(0x60));
+        let charlie_id = Identity::from_seeds(seed(0xc0), seed(0xe0));
+        let mut alice = test_core(alice_id, 10);
+        let mut charlie = test_core_with(
+            charlie_id,
+            12,
+            MeshConfig {
+                relay_quota_bytes: 1,
+                ..MeshConfig::default()
+            },
+        );
+        alice.add_contact(bob_id.public_identity(), "Bob").unwrap();
+        alice.send_text(bob_id.user_id(), "Are you safe?").unwrap();
+
+        let ac = LinkId(1);
+        let ca = LinkId(1);
+        let a_actions = alice
+            .process_event(CoreEvent::LinkOpened {
+                link_id: ac,
+                peer_token: b"charlie".to_vec(),
+            })
+            .unwrap();
+        let c_actions = charlie
+            .process_event(CoreEvent::LinkOpened {
+                link_id: ca,
+                peer_token: b"alice".to_vec(),
+            })
+            .unwrap();
+        pump_until_idle(&mut alice, &mut charlie, ac, ca, a_actions, c_actions);
+        assert!(charlie.stored_bundles().unwrap().is_empty());
+    }
+
+    #[test]
+    fn sender_caps_offers_per_stranger_encounter() {
+        let alice_id = Identity::from_seeds(seed(0x00), seed(0x20));
+        let bob_id = Identity::from_seeds(seed(0x40), seed(0x60));
+        let charlie_id = Identity::from_seeds(seed(0xc0), seed(0xe0));
+        let mut alice = test_core_with(
+            alice_id,
+            10,
+            MeshConfig {
+                max_offers_per_encounter: 1,
+                ..MeshConfig::default()
+            },
+        );
+        let mut charlie = test_core(charlie_id, 12);
+        alice.add_contact(bob_id.public_identity(), "Bob").unwrap();
+        alice.send_text(bob_id.user_id(), "one").unwrap();
+        alice.send_text(bob_id.user_id(), "two").unwrap();
+        alice.send_text(bob_id.user_id(), "three").unwrap();
+
+        let ac = LinkId(1);
+        let ca = LinkId(1);
+        let a_actions = alice
+            .process_event(CoreEvent::LinkOpened {
+                link_id: ac,
+                peer_token: b"charlie".to_vec(),
+            })
+            .unwrap();
+        let c_actions = charlie
+            .process_event(CoreEvent::LinkOpened {
+                link_id: ca,
+                peer_token: b"alice".to_vec(),
+            })
+            .unwrap();
+        pump_until_idle(&mut alice, &mut charlie, ac, ca, a_actions, c_actions);
+        assert_eq!(charlie.stored_bundles().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn destination_is_requested_even_when_foreign_cap_is_zero() {
+        let alice_id = Identity::from_seeds(seed(0x00), seed(0x20));
+        let bob_id = Identity::from_seeds(seed(0x40), seed(0x60));
+        let charlie_id = Identity::from_seeds(seed(0xc0), seed(0xe0));
+        let mut alice = test_core(alice_id, 10);
+        let mut charlie = test_core_with(
+            charlie_id,
+            12,
+            MeshConfig {
+                max_foreign_bundles_per_encounter: 0,
+                ..MeshConfig::default()
+            },
+        );
+        alice
+            .add_contact(charlie.public_identity(), "Charlie")
+            .unwrap();
+        charlie
+            .add_contact(alice.public_identity(), "Alice")
+            .unwrap();
+        alice.add_contact(bob_id.public_identity(), "Bob").unwrap();
+        alice.send_text(bob_id.user_id(), "for bob").unwrap();
+        alice.send_text(charlie.user_id(), "for charlie").unwrap();
+
+        let ac = LinkId(1);
+        let ca = LinkId(1);
+        let a_actions = alice
+            .process_event(CoreEvent::LinkOpened {
+                link_id: ac,
+                peer_token: b"charlie".to_vec(),
+            })
+            .unwrap();
+        let c_actions = charlie
+            .process_event(CoreEvent::LinkOpened {
+                link_id: ca,
+                peer_token: b"alice".to_vec(),
+            })
+            .unwrap();
+        pump_until_idle(&mut alice, &mut charlie, ac, ca, a_actions, c_actions);
+        let texts: Vec<String> = charlie
+            .plaintext_messages()
+            .unwrap()
+            .into_iter()
+            .map(|m| m.text)
+            .collect();
+        assert_eq!(texts, vec!["for charlie".to_string()]);
+        assert_eq!(charlie.stored_bundles().unwrap().len(), 1);
     }
 }
